@@ -22,6 +22,7 @@ import topologyRoutes from './routes/topology';
 import securityRoutes from './routes/security';
 import servicesRoutes from './routes/services';
 import systemRoutes from './routes/system';
+import sysdataRoutes from './routes/sysdata';
 import { startDetector } from './system/detector';
 import { ensureServerAsync } from './system/wireguard';
 
@@ -74,6 +75,7 @@ async function main() {
   app.use('/api/security', requireAuth, securityRoutes);
   app.use('/api/services', requireAuth, servicesRoutes);
   app.use('/api/system',   requireAuth, systemRoutes);
+  app.use('/api/sysdata',  requireAuth, sysdataRoutes);
 
   // Static SPA. Vite emits content-hashed asset filenames (index-<sha>.js,
   // ...css) which are safe to cache forever. But index.html itself must not

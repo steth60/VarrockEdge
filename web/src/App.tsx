@@ -15,6 +15,7 @@ import { Firewall } from './views/Firewall';
 import { Users } from './views/Users';
 import { Services } from './views/Services';
 import { Settings } from './views/Settings';
+import { SystemData } from './views/SystemData';
 
 export default function App() {
   const auth = useAuth();
@@ -33,15 +34,16 @@ export default function App() {
   return (
     <div className="app-bg min-h-screen flex flex-col">
       <div className="flex flex-1 min-h-0">
-        <Sidebar tweaks={tweaks} />
+        <Sidebar tweaks={tweaks} user={auth.user} onLogout={auth.logout} />
         <main className="flex-1 min-w-0 flex flex-col">
-          <Header user={auth.user} onLogout={auth.logout} />
+          <Header />
           <div className="flex-1 overflow-auto">
-            <div className="max-w-[1480px] mx-auto px-8 py-6">
+            <div className="px-6 py-5">
               <Routes>
                 <Route path="/" element={<Navigate to="/overview" replace />} />
                 <Route path="/overview" element={<Overview />} />
                 <Route path="/topology" element={<Topology />} />
+                <Route path="/sysdata"  element={<SystemData />} />
                 <Route path="/logs" element={<Logs />} />
                 <Route path="/dhcp" element={<Dhcp />} />
                 <Route path="/dns" element={<Dns />} />

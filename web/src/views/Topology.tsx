@@ -1,28 +1,19 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Card, Button, LegendDot, Icon } from '../components/primitives';
+import { useEffect, useRef, useState } from 'react';
+import { Button, IconButton, Icon, ToggleSwitch } from '../components/primitives';
 import { api } from '../api/client';
 
 interface TopologyData {
   wan: { iface: string; ip: string | null; rxMbps: number; txMbps: number; addresses: { ip: string; role: string }[] };
-  lan: { iface: string; ip: string; cidr: string; rxMbps: number; txMbps: number; hosts: { mac: string; ip: string; hostname: string; source: 'lease' | 'reservation' }[] };
-  vpn: { cidr: string; port: number; peers: { id: number; name: string; allowedIps: string; status: 'connected' | 'idle' | 'offline'; kind: string; endpoint: string; rxBytes: number; txBytes: number }[] };
+  lan: { iface: string; ip: string; cidr: string; rxMbps: number; txMbps: number; hosts: { mac: string; ip: string; hostname: string; source: 'lease' | 'reservation' | 'static' }[] };
+  vpn: { cidr: string; port: number; peers: { id: number; name: string; allowedIps: string; status: 'connected' | 'idle' | 'offline'; kind: string; endpoint: string; rxBytes: number; txBytes: number; remoteSubnet: string | null }[] };
   edge: { hostname: string; version: string; container: string; uptime: number };
   ts: number;
 }
 
-const STATUS_COLOR: Record<string, string> = {
-  connected: '#22d3ee',
-  idle:      '#fbbf24',
-  offline:   '#71717a',
-  lease:     '#34d399',
-  reservation: '#22d3ee',
-};
-
 export function Topology() {
+  const [tab, setTab] = useState<'topology' | 'infrastructure'>('topology');
+  const [collapsed, setCollapsed] = useState(false);
   const [data, setData] = useState<TopologyData | null>(null);
-  const [hovered, setHovered] = useState<string | null>(null);
-  const [showAnnotations, setShowAnnotations] = useState(true);
-  const [refreshTick, setRefreshTick] = useState(0);
   const svgRef = useRef<SVGSVGElement | null>(null);
 
   const fetchData = () => api.get<TopologyData>('/api/topology').then(setData).catch(() => {});
@@ -31,7 +22,7 @@ export function Topology() {
     fetchData();
     const t = setInterval(fetchData, 30_000);
     return () => clearInterval(t);
-  }, [refreshTick]);
+  }, []);
 
   const exportSvg = () => {
     if (!svgRef.current) return;
@@ -48,241 +39,387 @@ export function Topology() {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center gap-3">
-        <h3 className="font-display text-[15px] font-semibold tracking-tight text-zinc-100">Topology</h3>
-        <span className="text-[11.5px] text-zinc-500">
-          {data ? `Live · ${data.lan.hosts.length} LAN host${data.lan.hosts.length === 1 ? '' : 's'}, ${data.vpn.peers.length} peer${data.vpn.peers.length === 1 ? '' : 's'} · auto-refreshed every 30s` : 'Loading…'}
-        </span>
+    <div className="flex flex-col gap-4" style={{ minHeight: 'calc(100vh - 110px)' }}>
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-1 p-1 rounded-lg bg-zinc-900/40 border border-zinc-800/60">
+          {[
+            { id: 'topology',       label: 'Topology',       icon: 'Workflow' },
+            { id: 'infrastructure', label: 'Infrastructure', icon: 'Boxes' },
+          ].map(t => (
+            <button key={t.id} onClick={() => setTab(t.id as any)}
+                    className={`inline-flex items-center gap-2 h-8 px-3.5 rounded-md text-[12.5px] font-medium transition-colors ${tab === t.id ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/40'}`}>
+              <Icon name={t.icon} size={13} />{t.label}
+            </button>
+          ))}
+        </div>
+        <IconButton name={collapsed ? 'PanelLeftOpen' : 'PanelLeftClose'} label="Collapse panel" size="sm" variant="ghost" onClick={() => setCollapsed(s => !s)} />
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="ghost" size="sm" icon={showAnnotations ? 'Eye' : 'EyeOff'} onClick={() => setShowAnnotations(s => !s)}>Annotations</Button>
-          <Button variant="secondary" size="sm" icon="Download" onClick={exportSvg}>Export SVG</Button>
-          <Button variant="primary" size="sm" icon="RefreshCw" onClick={() => setRefreshTick(t => t + 1)}>Refresh</Button>
+          <Button variant="ghost" size="sm" icon="Maximize2">Fit</Button>
+          <Button variant="ghost" size="sm" icon="Download" onClick={exportSvg}>Export</Button>
+          <Button variant="primary" size="sm" icon="RefreshCw" onClick={fetchData}>Refresh</Button>
         </div>
       </div>
 
-      <Card padding="p-0" className="relative overflow-hidden">
-        <div className="relative grid-faint" style={{ height: 640 }}>
-          {data ? (
-            <NetworkSVG data={data} hovered={hovered} setHovered={setHovered} showAnnotations={showAnnotations} svgRef={svgRef} />
-          ) : (
-            <div className="absolute inset-0 flex items-center justify-center text-[12px] text-zinc-500 font-mono">loading topology…</div>
-          )}
-          <div className="absolute left-4 bottom-4 flex flex-wrap items-center gap-3 bg-zinc-950/70 backdrop-blur border border-zinc-800/70 rounded-lg px-3 py-2 text-[11px]">
-            <LegendDot color="#34d399" label="LAN lease" />
-            <LegendDot color="#22d3ee" label="LAN reservation / WG connected" />
-            <LegendDot color="#fbbf24" label="WG idle" />
-            <LegendDot color="#71717a" label="WG offline" />
+      <div className="grid gap-4 flex-1" style={{ gridTemplateColumns: collapsed ? '0fr 1fr' : '280px 1fr', minHeight: 0 }}>
+        {!collapsed && (tab === 'topology' ? <TopologyFilterPanel data={data} /> : <InfrastructureFilterPanel data={data} />)}
+        {collapsed && <div />}
+        <div className="rounded-xl border border-zinc-800/70 bg-zinc-950/40 backdrop-blur grid-faint overflow-hidden relative">
+          {!data && <div className="absolute inset-0 flex items-center justify-center text-[12px] text-zinc-500 font-mono">loading…</div>}
+          {data && (tab === 'topology' ? <TopologyCanvas data={data} svgRef={svgRef} /> : <InfrastructureCanvas data={data} svgRef={svgRef} />)}
+          <div className="absolute right-4 bottom-4 flex flex-col gap-1 bg-zinc-950/80 backdrop-blur border border-zinc-800/70 rounded-lg p-1 shadow-xl">
+            <IconButton name="Crosshair" label="Recenter" size="sm" />
+            <IconButton name="Plus" label="Zoom in" size="sm" />
+            <IconButton name="Minus" label="Zoom out" size="sm" />
           </div>
         </div>
-      </Card>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <Card title="Public Subnet" subtitle={data?.wan.iface ? `${data.wan.iface} · ${data.wan.ip ?? '(no v4)'}` : 'eth0'}>
-          <div className="space-y-1.5 font-mono text-[12px]">
-            {data?.wan.addresses.map(a => (
-              <div key={a.ip} className="flex justify-between">
-                <span className="text-cyan-300">{a.ip}</span>
-                <span className="text-zinc-400">{a.role === 'primary' ? 'primary' : 'SNAT'}</span>
-              </div>
-            ))}
-            {data && data.wan.addresses.length === 0 && <div className="text-zinc-600">(no addresses bound)</div>}
-          </div>
-        </Card>
-        <Card title="Private Subnet" subtitle={`${data?.lan.cidr ?? '10.0.0.0/24'} · ${data?.lan.iface ?? 'eth1'} bridge`}>
-          <div className="space-y-1.5 font-mono text-[12px]">
-            <div className="flex justify-between"><span className="text-cyan-300">{data?.lan.ip ?? '10.0.0.1'}</span><span className="text-zinc-300">VarrokEdge (gateway)</span></div>
-            <div className="flex justify-between"><span className="text-zinc-400">{data?.lan.hosts.length ?? 0} hosts seen</span><span className="text-zinc-600">via DHCP / static</span></div>
-          </div>
-        </Card>
-        <Card title="VPN Subnet" subtitle={`${data?.vpn.cidr ?? '10.10.0.0/24'} · wg0 :${data?.vpn.port ?? 51820}`}>
-          <div className="space-y-1.5 font-mono text-[12px]">
-            <div className="flex justify-between"><span className="text-zinc-400">{data?.vpn.peers.length ?? 0} peers</span><span className="text-zinc-600">{data?.vpn.peers.filter(p => p.status === 'connected').length ?? 0} connected</span></div>
-          </div>
-        </Card>
       </div>
     </div>
   );
 }
 
-function NetworkSVG({ data, hovered, setHovered, showAnnotations, svgRef }: {
-  data: TopologyData;
-  hovered: string | null;
-  setHovered: (s: string | null) => void;
-  showAnnotations: boolean;
-  svgRef: React.MutableRefObject<SVGSVGElement | null>;
-}) {
-  const W = 1100, H = 640;
-  const ovh   = { x:  90, y: 110 };
-  const cloud = { x: 230, y: 110 };
-  const edge  = { x: 480, y: 320 };
-  const lan   = { x: 740, y: 210 };
-  const vpn   = { x: 740, y: 450 };
+// ─── Filter panels ───────────────────────────────────────────────
+function TopologyFilterPanel({ data }: { data: TopologyData | null }) {
+  const lanCount = data?.lan.hosts.length ?? 0;
+  const peerCount = data?.vpn.peers.length ?? 0;
+  const siteCount = data?.vpn.peers.filter(p => p.kind === 'site').length ?? 0;
+  return (
+    <aside className="rounded-xl border border-zinc-800/70 bg-zinc-950/40 backdrop-blur p-4 space-y-4 overflow-y-auto">
+      <FilterToggleRow label="Show Internet Traffic" />
+      <FilterGroup label="Device Status" defaultOpen>
+        <FilterCheckRow label="Online" count={data?.vpn.peers.filter(p => p.status === 'connected').length ?? 0} dot="bg-emerald-400" defaultChecked />
+        <FilterCheckRow label="Offline" count={data?.vpn.peers.filter(p => p.status === 'offline').length ?? 0} dot="bg-zinc-600" />
+      </FilterGroup>
+      <FilterGroup label="Client Devices" defaultOpen toggleable>
+        <FilterCheckRow label="LAN (wired)" count={lanCount} defaultChecked />
+        <FilterCheckRow label="VPN peers" count={peerCount - siteCount} defaultChecked />
+        <FilterCheckRow label="Sites" count={siteCount} defaultChecked />
+      </FilterGroup>
+      <FilterGroup label="Subnets" defaultOpen>
+        <FilterCheckRow label={`LAN — ${data?.lan.cidr ?? '10.0.0.0/24'}`} count={lanCount} defaultChecked />
+        <FilterCheckRow label={`VPN — ${data?.vpn.cidr ?? '10.10.0.0/24'}`} count={peerCount} defaultChecked />
+        <FilterCheckRow label="Public — /29" count={1} defaultChecked />
+      </FilterGroup>
+      <div className="pt-2 border-t border-zinc-800/60">
+        <button className="text-[11.5px] text-cyan-300 hover:text-cyan-200">Clear filters</button>
+      </div>
+    </aside>
+  );
+}
 
-  // Layout: two "zone" boxes on the right hold LAN hosts and VPN peers.
-  // Each zone is 360 wide × N tall; nodes are placed inside with a comfortable margin
-  // and labels truncated so nothing collides with the zone borders.
-  const LAN_BOX  = { x: 680, y:  60, w: 360, h: 280, hostColX: 900, minY: 105, maxY: 320 };
-  const VPN_BOX  = { x: 680, y: 360, w: 360, h: 240, peerColX: 900, minY: 405, maxY: 580 };
+function InfrastructureFilterPanel({ data }: { data: TopologyData | null }) {
+  return (
+    <aside className="rounded-xl border border-zinc-800/70 bg-zinc-950/40 backdrop-blur p-4 space-y-4 overflow-y-auto">
+      <FilterToggleRow label="Digital twin details" />
+      <div className="rounded-lg border border-cyan-400/30 bg-cyan-400/5 p-3">
+        <div className="flex items-center justify-between">
+          <div className="text-[12px] font-medium text-zinc-100">VarrokEdge — {data?.edge.hostname.split('.')[0] ?? 'edge-01'}</div>
+          <span className="text-[10px] text-zinc-500 font-mono">{data?.edge.version ?? '0.9.2'}</span>
+        </div>
+        <DeviceFacePlate />
+        <div className="text-[10.5px] text-zinc-500 font-mono mt-2 flex items-center justify-between">
+          <span>{data?.edge.container ?? 'ct-104'} · Proxmox</span>
+          <span className="text-zinc-400">{formatUptime(data?.edge.uptime ?? 0)}</span>
+        </div>
+      </div>
+      <div className="space-y-1.5 text-[12px]">
+        <button className="w-full text-left text-cyan-300 hover:text-cyan-200 inline-flex items-center gap-2"><Icon name="Plus" size={11} /> Create group</button>
+        <button className="w-full text-left text-cyan-300 hover:text-cyan-200 inline-flex items-center gap-2"><Icon name="Plus" size={11} /> Add device</button>
+      </div>
+    </aside>
+  );
+}
 
-  const hosts = useMemo(() => distribute(data.lan.hosts.slice(0, 8), LAN_BOX.hostColX, LAN_BOX.minY, LAN_BOX.maxY).map((p, i) => ({
-    id: `lan-${i}`,
-    x: p.x, y: p.y,
-    label: truncate(data.lan.hosts[i]!.hostname || data.lan.hosts[i]!.mac.slice(0, 8), 14),
-    sub: data.lan.hosts[i]!.ip,
-    tone: STATUS_COLOR[data.lan.hosts[i]!.source] ?? '#34d399',
-  })), [data.lan.hosts]);
+function FilterToggleRow({ label }: { label: string }) {
+  const [v, setV] = useState(false);
+  return (
+    <div className="flex items-center justify-between p-2 -mx-1 rounded-md hover:bg-zinc-900/40">
+      <span className="text-[12px] font-medium text-zinc-200">{label}</span>
+      <ToggleSwitch value={v} onChange={setV} />
+    </div>
+  );
+}
 
-  const peers = useMemo(() => distribute(data.vpn.peers.slice(0, 6), VPN_BOX.peerColX, VPN_BOX.minY, VPN_BOX.maxY).map((p, i) => ({
-    id: `vpn-${i}`,
-    x: p.x, y: p.y,
-    label: truncate(data.vpn.peers[i]!.name, 14),
-    sub: data.vpn.peers[i]!.allowedIps,
-    tone: STATUS_COLOR[data.vpn.peers[i]!.status] ?? '#71717a',
-  })), [data.vpn.peers]);
+function FilterGroup({ label, defaultOpen, toggleable, children }: { label: string; defaultOpen?: boolean; toggleable?: boolean; children: React.ReactNode }) {
+  const [open, setOpen] = useState(!!defaultOpen);
+  const [enabled, setEnabled] = useState(true);
+  return (
+    <div>
+      <button onClick={() => setOpen(o => !o)} className="w-full flex items-center justify-between py-1.5">
+        <span className="text-[11.5px] font-medium text-zinc-100">{label}</span>
+        <span className="flex items-center gap-2">
+          {toggleable && (
+            <span onClick={(e) => e.stopPropagation()}>
+              <ToggleSwitch value={enabled} onChange={setEnabled} />
+            </span>
+          )}
+          <Icon name={open ? 'ChevronUp' : 'ChevronDown'} size={12} className="text-zinc-500" />
+        </span>
+      </button>
+      {open && enabled && <div className="pl-1 space-y-1 pt-1">{children}</div>}
+    </div>
+  );
+}
 
-  const lanOverflow = Math.max(0, data.lan.hosts.length - 8);
-  const vpnOverflow = Math.max(0, data.vpn.peers.length - 6);
+function FilterCheckRow({ label, count, dot, defaultChecked }: { label: string; count: number; dot?: string; defaultChecked?: boolean }) {
+  const [v, setV] = useState(!!defaultChecked);
+  return (
+    <label className="flex items-center justify-between py-1.5 px-1 -mx-1 rounded-md hover:bg-zinc-900/40 cursor-pointer">
+      <span className="flex items-center gap-2 text-[12px] text-zinc-300">
+        <span className={`w-3.5 h-3.5 rounded-[3px] border flex items-center justify-center transition-colors ${v ? 'bg-cyan-400 border-cyan-400' : 'border-zinc-600 bg-transparent'}`}
+              onClick={() => setV(x => !x)}>
+          {v && <Icon name="Check" size={10} color="#09090b" strokeWidth={3.5} />}
+        </span>
+        {dot && <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />}
+        <span>{label}</span>
+      </span>
+      <span className="font-mono text-[10.5px] text-zinc-500">({count})</span>
+    </label>
+  );
+}
 
-  const linkOp = (a: string, b: string) => !hovered || hovered === a || hovered === b ? 1 : 0.25;
-  const wanMbps = (data.wan.rxMbps + data.wan.txMbps).toFixed(1);
+function DeviceFacePlate() {
+  return (
+    <svg viewBox="0 0 220 36" className="w-full mt-2" style={{ height: 36 }}>
+      <defs>
+        <linearGradient id="dpFace" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="rgba(34,211,238,0.15)" />
+          <stop offset="100%" stopColor="rgba(34,211,238,0.02)" />
+        </linearGradient>
+      </defs>
+      <rect x="0.5" y="2" width="219" height="32" rx="3" fill="url(#dpFace)" stroke="rgba(34,211,238,0.45)" />
+      <rect x="6" y="9" width="60" height="18" rx="1.5" fill="rgba(9,9,11,0.6)" stroke="rgba(82,82,91,0.6)" />
+      <text x="36" y="22" textAnchor="middle" fill="#a1a1aa" fontFamily="JetBrains Mono, monospace" fontSize="9">VARROK</text>
+      {Array.from({ length: 8 }).map((_, i) => (
+        <g key={i}>
+          <rect x={76 + i * 16} y="11" width="13" height="14" rx="1.5" fill="rgba(9,9,11,0.6)" stroke="rgba(82,82,91,0.6)" />
+          <circle cx={82.5 + i * 16} cy="18" r="1.4" fill={i < 2 ? '#34d399' : i < 4 ? '#22d3ee' : 'rgba(82,82,91,0.5)'} />
+        </g>
+      ))}
+      <circle cx="212" cy="18" r="2.2" fill="#34d399">
+        <animate attributeName="opacity" values="1;0.4;1" dur="2s" repeatCount="indefinite" />
+      </circle>
+    </svg>
+  );
+}
+
+// ─── Topology canvas — hierarchical Internet → WAN → Edge → Subnets → Devices
+function TopologyCanvas({ data, svgRef }: { data: TopologyData; svgRef: React.MutableRefObject<SVGSVGElement | null> }) {
+  const W = 1400, H = 680;
+  const lanHosts = data.lan.hosts.slice(0, 8);
+  const vpnPeers = data.vpn.peers.filter(p => p.kind !== 'site').slice(0, 6);
+  const sites = data.vpn.peers.filter(p => p.kind === 'site').slice(0, 4);
+
+  const internetY = 60, wanY = 150, edgeY = 250, subnetY = 360, deviceY = 510;
+  const centerX = W / 2;
+  const lanX = 460, vpnX = 950, siteX = 1240;
+  const lanXs = lanHosts.map((_, i) => 180 + i * 110);
+  const vpnXs = vpnPeers.map((_, i) => 830 + i * 90);
+  const siteXs = sites.map((_, i) => 1170 + i * 90);
 
   return (
-    <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full h-full" preserveAspectRatio="xMidYMid meet">
+    <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full h-full block" preserveAspectRatio="xMidYMid meet">
       <defs>
-        <linearGradient id="wan-flow" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%"  stopColor="#34d399" stopOpacity="0.0" />
-          <stop offset="50%" stopColor="#34d399" stopOpacity="0.8" />
-          <stop offset="100%" stopColor="#34d399" stopOpacity="0.0" />
-        </linearGradient>
-        <filter id="edge-glow" x="-50%" y="-50%" width="200%" height="200%">
+        <filter id="tnodeGlow" x="-50%" y="-50%" width="200%" height="200%">
           <feGaussianBlur stdDeviation="6" result="b" />
           <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
         </filter>
       </defs>
 
-      <g opacity={hovered && hovered !== 'lan' ? 0.4 : 1}>
-        <rect x={LAN_BOX.x} y={LAN_BOX.y} width={LAN_BOX.w} height={LAN_BOX.h} rx="12" fill="rgba(34,211,238,0.04)" stroke="rgba(34,211,238,0.18)" strokeDasharray="4 4" />
-        <text x={LAN_BOX.x + 20} y={LAN_BOX.y + 22} fill="#22d3ee" fontFamily="JetBrains Mono, monospace" fontSize="11" opacity={showAnnotations ? 1 : 0}>{data.lan.cidr} · LAN</text>
-      </g>
-      <g opacity={hovered && hovered !== 'vpn' ? 0.4 : 1}>
-        <rect x={VPN_BOX.x} y={VPN_BOX.y} width={VPN_BOX.w} height={VPN_BOX.h} rx="12" fill="rgba(167,139,250,0.04)" stroke="rgba(167,139,250,0.18)" strokeDasharray="4 4" />
-        <text x={VPN_BOX.x + 20} y={VPN_BOX.y + 22} fill="#a78bfa" fontFamily="JetBrains Mono, monospace" fontSize="11" opacity={showAnnotations ? 1 : 0}>{data.vpn.cidr} · wg0 :{data.vpn.port}</text>
-      </g>
-      <g opacity={hovered && hovered !== 'cloud' ? 0.4 : 1}>
-        <rect x="40" y="60" width="340" height="180" rx="12" fill="rgba(82,82,91,0.04)" stroke="rgba(82,82,91,0.2)" strokeDasharray="4 4" />
-        <text x="60" y="82" fill="#a1a1aa" fontFamily="JetBrains Mono, monospace" fontSize="11" opacity={showAnnotations ? 1 : 0}>Internet · WAN ({data.wan.iface})</text>
-      </g>
-
-      <line x1={ovh.x} y1={ovh.y} x2={cloud.x} y2={cloud.y} stroke="rgba(161,161,170,0.4)" strokeWidth="1.5" opacity={linkOp('ovh','cloud')} />
-
-      <g opacity={linkOp('cloud','edge')}>
-        <line x1={cloud.x + 20} y1={cloud.y + 10} x2={edge.x - 30} y2={edge.y - 20} stroke="rgba(52,211,153,0.5)" strokeWidth="2" />
-        <line x1={cloud.x + 20} y1={cloud.y + 10} x2={edge.x - 30} y2={edge.y - 20} stroke="url(#wan-flow)" strokeWidth="3" strokeDasharray="20 60">
-          <animate attributeName="stroke-dashoffset" from="0" to="-80" dur="3s" repeatCount="indefinite" />
-        </line>
-        {showAnnotations && <text x={(cloud.x + edge.x) / 2 - 50} y={(cloud.y + edge.y) / 2} fill="#34d399" fontFamily="JetBrains Mono, monospace" fontSize="10">{data.wan.iface} ↕ {wanMbps}Mbps</text>}
-      </g>
-
-      <g opacity={linkOp('edge','lan')}>
-        <line x1={edge.x + 30} y1={edge.y - 10} x2={lan.x - 20} y2={lan.y} stroke="rgba(34,211,238,0.5)" strokeWidth="2" />
-        {showAnnotations && <text x={(edge.x + lan.x) / 2 - 30} y={(edge.y + lan.y) / 2 - 18} fill="#22d3ee" fontFamily="JetBrains Mono, monospace" fontSize="10">{data.lan.iface}</text>}
-      </g>
-
-      <g opacity={linkOp('edge','vpn')}>
-        <line x1={edge.x + 30} y1={edge.y + 10} x2={vpn.x - 20} y2={vpn.y} stroke="rgba(167,139,250,0.6)" strokeWidth="2" strokeDasharray="6 4" />
-        {showAnnotations && <text x={(edge.x + vpn.x) / 2 - 40} y={(edge.y + vpn.y) / 2 + 18} fill="#a78bfa" fontFamily="JetBrains Mono, monospace" fontSize="10">wg0 :{data.vpn.port} UDP</text>}
-      </g>
-
-      {hosts.map(h => (
-        <line key={h.id} x1={lan.x + 20} y1={lan.y} x2={h.x - 14} y2={h.y}
-              stroke="rgba(82,82,91,0.5)" strokeWidth="1.2"
-              opacity={!hovered || hovered === h.id || hovered === 'lan' ? 1 : 0.2} />
-      ))}
-      {peers.map(p => (
-        <line key={p.id} x1={vpn.x + 20} y1={vpn.y} x2={p.x - 14} y2={p.y}
-              stroke="rgba(167,139,250,0.4)" strokeWidth="1.2" strokeDasharray="3 3"
-              opacity={!hovered || hovered === p.id || hovered === 'vpn' ? 1 : 0.2} />
+      {[['Internet', internetY], ['WAN', wanY], ['Edge', edgeY], ['Subnets', subnetY], ['Endpoints', deviceY]].map(([l, y]) => (
+        <text key={l as string} x="24" y={(y as number) + 4} fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="9.5">{l}</text>
       ))}
 
-      <Node x={ovh.x}   y={ovh.y}   id="ovh"   icon="Cloud" label="WAN GW"   sub={data.wan.ip ?? '—'} tone="#71717a" hovered={hovered} setHovered={setHovered} />
-      <Node x={cloud.x} y={cloud.y} id="cloud" icon="Globe" label="Internet" sub="any" tone="#71717a" hovered={hovered} setHovered={setHovered} />
+      <Wire x1={centerX} y1={internetY + 22} x2={centerX} y2={wanY - 22} color="rgba(82,82,91,0.5)" />
+      <Wire x1={centerX} y1={wanY + 22} x2={centerX} y2={edgeY - 28} color="#34d399" flow />
+      <Wire x1={centerX - 30} y1={edgeY + 28} x2={lanX} y2={subnetY - 22} color="rgba(34,211,238,0.6)" />
+      <Wire x1={centerX + 5} y1={edgeY + 28} x2={vpnX} y2={subnetY - 22} color="rgba(167,139,250,0.6)" dashed />
+      <Wire x1={centerX + 30} y1={edgeY + 28} x2={siteX} y2={subnetY - 22} color="rgba(167,139,250,0.6)" dashed />
 
-      <g onMouseEnter={() => setHovered('edge')} onMouseLeave={() => setHovered(null)} style={{ cursor: 'pointer' }}>
-        <rect x={edge.x - 60} y={edge.y - 36} width="120" height="72" rx="12"
-              fill="rgba(34,211,238,0.08)" stroke="#22d3ee" strokeWidth="1.5"
-              filter={hovered === 'edge' ? 'url(#edge-glow)' : undefined} />
-        <text x={edge.x} y={edge.y - 6} textAnchor="middle" fill="#e4e4e7" fontFamily="Space Grotesk, sans-serif" fontSize="13" fontWeight="600">VarrokEdge</text>
-        <text x={edge.x} y={edge.y + 9} textAnchor="middle" fill="#a1a1aa" fontFamily="JetBrains Mono, monospace" fontSize="10">{data.edge.container} · {data.edge.version}</text>
-        <text x={edge.x} y={edge.y + 23} textAnchor="middle" fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="9.5">NAT · DHCP · DNS · WG</text>
+      {lanXs.map((x, i) => <Wire key={`l${i}`} x1={lanX} y1={subnetY + 22} x2={x} y2={deviceY - 22} color="rgba(82,82,91,0.55)" thin />)}
+      {vpnXs.map((x, i) => <Wire key={`v${i}`} x1={vpnX} y1={subnetY + 22} x2={x} y2={deviceY - 22} color="rgba(167,139,250,0.5)" dashed thin />)}
+      {siteXs.map((x, i) => <Wire key={`s${i}`} x1={siteX} y1={subnetY + 22} x2={x} y2={deviceY - 22} color="rgba(167,139,250,0.5)" dashed thin />)}
+
+      <TNode x={centerX} y={internetY} icon="Globe" label="Internet" sub="any" tone="#71717a" />
+      <TNode x={centerX} y={wanY} icon="Cloud" label={`WAN · ${data.wan.iface}`} sub={data.wan.ip ?? '—'} tone="#34d399" badge="100%" />
+
+      <g filter="url(#tnodeGlow)">
+        <rect x={centerX - 110} y={edgeY - 30} width="220" height="60" rx="8" fill="rgba(34,211,238,0.08)" stroke="#22d3ee" strokeWidth="1.4" />
       </g>
+      <foreignObject x={centerX - 106} y={edgeY - 26} width="212" height="52">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, height: '100%' }}>
+          <div style={{ width: 34, height: 34, borderRadius: 8, background: 'linear-gradient(135deg,#22d3ee,rgba(99,102,241,0.7))', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <span style={{ color: 'rgba(9,9,11,0.9)', fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 14 }}>VE</span>
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ width: 6, height: 6, borderRadius: 99, background: '#34d399', boxShadow: '0 0 6px #34d399' }} />
+              <span style={{ fontFamily: 'Space Grotesk, sans-serif', fontSize: 13, color: '#e4e4e7', fontWeight: 600 }}>VarrokEdge — {data.edge.hostname.split('.')[0]}</span>
+            </div>
+            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10.5, color: '#a1a1aa', marginTop: 2 }}>{data.edge.container} · {data.edge.version} · NAT · DHCP · DNS · WG</div>
+          </div>
+        </div>
+      </foreignObject>
 
-      <Node x={lan.x} y={lan.y} id="lan" icon="Network"     label="LAN bridge" sub={`${data.lan.iface} · ${data.lan.ip}`} tone="#22d3ee" hovered={hovered} setHovered={setHovered} />
-      <Node x={vpn.x} y={vpn.y} id="vpn" icon="ShieldCheck" label="wg0"        sub={data.vpn.cidr} tone="#a78bfa" hovered={hovered} setHovered={setHovered} />
+      <TNode x={lanX}  y={subnetY} icon="Network"     label={`LAN · ${data.lan.iface}`} sub={data.lan.cidr} tone="#22d3ee" />
+      <TNode x={vpnX}  y={subnetY} icon="ShieldCheck" label="wg0 peers" sub={data.vpn.cidr} tone="#a78bfa" />
+      <TNode x={siteX} y={subnetY} icon="Network"     label="Site links" sub={`${sites.length} configured`} tone="#a78bfa" />
 
-      {hosts.map(h => <Leaf key={h.id} {...h} hovered={hovered} setHovered={setHovered} />)}
-      {peers.map(p => <Leaf key={p.id} {...p} hovered={hovered} setHovered={setHovered} />)}
+      {lanHosts.map((d, i) => <TLeaf key={d.mac} x={lanXs[i]!} y={deviceY} icon="Cpu" label={truncate(d.hostname || d.mac.slice(0, 8), 12)} sub={d.ip} tone={d.source === 'reservation' ? '#22d3ee' : '#34d399'} />)}
+      {vpnPeers.map((p, i) => <TLeaf key={p.id} x={vpnXs[i]!} y={deviceY} icon="Smartphone" label={truncate(p.name, 12)} sub={p.allowedIps} tone={p.status === 'connected' ? '#22d3ee' : '#71717a'} />)}
+      {sites.map((s, i) => <TLeaf key={s.id} x={siteXs[i]!} y={deviceY} icon="Network" label={truncate(s.name, 12)} sub={s.remoteSubnet ?? '—'} tone={s.status === 'connected' ? '#22d3ee' : '#fbbf24'} />)}
 
-      {hosts.length === 0 && (
-        <text x={LAN_BOX.x + LAN_BOX.w / 2} y={LAN_BOX.y + LAN_BOX.h / 2} textAnchor="middle" fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="10">no LAN hosts yet</text>
-      )}
-      {peers.length === 0 && (
-        <text x={VPN_BOX.x + VPN_BOX.w / 2} y={VPN_BOX.y + VPN_BOX.h / 2} textAnchor="middle" fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="10">no WG peers yet</text>
-      )}
-      {lanOverflow > 0 && (
-        <text x={LAN_BOX.x + LAN_BOX.w - 14} y={LAN_BOX.y + LAN_BOX.h - 10} textAnchor="end" fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="9.5">+{lanOverflow} more</text>
-      )}
-      {vpnOverflow > 0 && (
-        <text x={VPN_BOX.x + VPN_BOX.w - 14} y={VPN_BOX.y + VPN_BOX.h - 10} textAnchor="end" fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="9.5">+{vpnOverflow} more</text>
-      )}
+      {lanHosts.length === 0 && <text x={lanX} y={deviceY} textAnchor="middle" fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="10">no LAN hosts yet</text>}
+      {vpnPeers.length + sites.length === 0 && <text x={(vpnX + siteX) / 2} y={deviceY} textAnchor="middle" fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="10">no WG peers yet</text>}
     </svg>
   );
 }
 
-function distribute<T>(items: T[], colX: number, minY: number, maxY: number) {
-  if (items.length === 0) return [];
-  const span = maxY - minY;
-  // Two-column layout offset for visual variety, but always inside the zone.
-  return items.map((_, i) => ({
-    x: colX + ((i % 2) * 30 - 15),
-    y: minY + (items.length === 1 ? span / 2 : (span / (items.length - 1)) * i),
-  }));
+// ─── Infrastructure canvas — WAN blocks + edge card + LAN bridge ─
+function InfrastructureCanvas({ data, svgRef }: { data: TopologyData; svgRef: React.MutableRefObject<SVGSVGElement | null> }) {
+  const W = 1400, H = 680;
+  return (
+    <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full h-full block" preserveAspectRatio="xMidYMid meet">
+      <defs>
+        <filter id="infraGlow" x="-50%" y="-50%" width="200%" height="200%">
+          <feGaussianBlur stdDeviation="8" result="b" />
+          <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
+        </filter>
+      </defs>
+
+      <foreignObject x="380" y="120" width="260" height="64">
+        <WanBlock provider={data.wan.iface} role="WAN · primary" ip={data.wan.ip ?? '—'} usage={100} brand="VE" />
+      </foreignObject>
+      <foreignObject x="760" y="120" width="260" height="64">
+        <WanBlock provider="—" role="WAN2 · failover" ip="not configured" usage={0} brand="?" />
+      </foreignObject>
+
+      <path d="M510,184 C510,300 700,360 700,440" stroke="rgba(34,211,238,0.6)" strokeWidth="1.8" fill="none" />
+      <path d="M890,184 C890,300 720,360 720,440" stroke="rgba(34,211,238,0.45)" strokeDasharray="5 4" strokeWidth="1.6" fill="none" />
+
+      <g filter="url(#infraGlow)">
+        <rect x="400" y="440" width="600" height="96" rx="12" fill="rgba(34,211,238,0.07)" stroke="#22d3ee" strokeWidth="1.5" />
+      </g>
+      <foreignObject x="412" y="452" width="576" height="72">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16, height: '100%' }}>
+          <div style={{ width: 200 }}><DeviceFacePlate /></div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ width: 7, height: 7, borderRadius: 99, background: '#34d399', boxShadow: '0 0 7px #34d399' }} />
+              <span style={{ fontFamily: 'Space Grotesk, sans-serif', fontSize: 15, color: '#e4e4e7', fontWeight: 600 }}>VarrokEdge — {data.edge.hostname.split('.')[0]}</span>
+              <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10.5, color: '#71717a', marginLeft: 6 }}>{data.edge.version}</span>
+            </div>
+            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11, color: '#a1a1aa', marginTop: 4 }}>{data.edge.container} · Proxmox · NAT + DHCP + DNS + WG</div>
+          </div>
+          <div style={{ display: 'flex', gap: 18, fontFamily: 'JetBrains Mono, monospace', fontSize: 12 }}>
+            <div style={{ textAlign: 'right' }}><div style={{ color: '#71717a', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.8 }}>Uptime</div><div style={{ color: '#e4e4e7', marginTop: 3 }}>{formatUptime(data.edge.uptime)}</div></div>
+          </div>
+        </div>
+      </foreignObject>
+
+      <path d="M700,536 C700,600 700,610 700,620" stroke="rgba(82,82,91,0.6)" strokeWidth="1.6" fill="none" />
+      <foreignObject x="540" y="618" width="320" height="46">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px', border: '1px solid rgba(63,63,70,0.7)', borderRadius: 10, background: 'rgba(24,24,27,0.6)' }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 26, height: 26, borderRadius: 6, background: 'rgba(34,211,238,0.1)', border: '1px solid rgba(34,211,238,0.35)' }}>
+            <Icon name="Network" size={13} color="#22d3ee" />
+          </span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontFamily: 'Space Grotesk, sans-serif', fontSize: 12, color: '#e4e4e7' }}>{data.lan.iface} · {data.lan.cidr}</div>
+            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10, color: '#71717a' }}>{data.lan.hosts.length} devices</div>
+          </div>
+          <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10.5, color: '#34d399' }}>100%</span>
+        </div>
+      </foreignObject>
+    </svg>
+  );
+}
+
+function WanBlock({ provider, role, ip, usage, brand }: { provider: string; role: string; ip: string; usage: number; brand: string }) {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px',
+      border: '1px solid rgba(63,63,70,0.8)', borderRadius: 10,
+      background: 'linear-gradient(180deg, rgba(24,24,27,0.95), rgba(24,24,27,0.7))',
+      height: '100%',
+    }}>
+      <div style={{
+        width: 34, height: 34, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: 'rgba(167,139,250,0.1)', border: '1px solid rgba(63,63,70,0.7)', flexShrink: 0,
+        color: '#a78bfa', fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 15,
+      }}>{brand}</div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 600, fontSize: 13, color: '#e4e4e7' }}>{provider}</div>
+          <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11, color: usage > 0 ? '#34d399' : '#71717a' }}>{usage}%</div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 4 }}>
+          <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10.5, color: '#a1a1aa' }}>{role}</div>
+          <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10.5, color: '#22d3ee' }}>{ip}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Wire({ x1, y1, x2, y2, color, flow, dashed, thin }: { x1: number; y1: number; x2: number; y2: number; color: string; flow?: boolean; dashed?: boolean; thin?: boolean }) {
+  const dy = y2 - y1;
+  const cp1 = `${x1},${y1 + dy * 0.45}`;
+  const cp2 = `${x2},${y2 - dy * 0.45}`;
+  const d = `M${x1},${y1} C${cp1} ${cp2} ${x2},${y2}`;
+  return (
+    <>
+      <path d={d} fill="none" stroke={color} strokeWidth={thin ? 1 : 1.5} strokeDasharray={dashed ? '4 4' : undefined} />
+      {flow && (
+        <path d={d} fill="none" stroke={color} strokeWidth="2.4" strokeDasharray="10 28" opacity="0.6">
+          <animate attributeName="stroke-dashoffset" from="0" to="-38" dur="2.5s" repeatCount="indefinite" />
+        </path>
+      )}
+    </>
+  );
+}
+
+function TNode({ x, y, icon, label, sub, tone, badge }: { x: number; y: number; icon: string; label: string; sub: string; tone: string; badge?: string }) {
+  return (
+    <g>
+      <circle cx={x} cy={y} r="22" fill="rgba(24,24,27,0.85)" stroke={tone} strokeWidth="1.4" />
+      <foreignObject x={x - 12} y={y - 12} width="24" height="24" pointerEvents="none">
+        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <Icon name={icon} size={14} color={tone} />
+        </div>
+      </foreignObject>
+      <text x={x} y={y + 40} textAnchor="middle" fill="#e4e4e7" fontFamily="Space Grotesk, sans-serif" fontSize="11.5" fontWeight="500">{label}</text>
+      <text x={x} y={y + 54} textAnchor="middle" fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="10">{sub}</text>
+      {badge && (
+        <g>
+          <rect x={x + 18} y={y - 32} width="32" height="14" rx="3" fill="#34d39922" stroke="#34d39977" />
+          <text x={x + 34} y={y - 22} textAnchor="middle" fill="#34d399" fontFamily="JetBrains Mono, monospace" fontSize="9">{badge}</text>
+        </g>
+      )}
+    </g>
+  );
+}
+
+function TLeaf({ x, y, icon, label, sub, tone }: { x: number; y: number; icon: string; label: string; sub: string; tone: string }) {
+  return (
+    <g>
+      <rect x={x - 18} y={y - 18} width="36" height="36" rx="6" fill="rgba(24,24,27,0.85)" stroke="rgba(82,82,91,0.7)" />
+      <foreignObject x={x - 9} y={y - 9} width="18" height="18" pointerEvents="none">
+        <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <Icon name={icon} size={12} color={tone} />
+        </div>
+      </foreignObject>
+      <text x={x} y={y + 30} textAnchor="middle" fill="#d4d4d8" fontFamily="Space Grotesk, sans-serif" fontSize="10">{label}</text>
+      <text x={x} y={y + 42} textAnchor="middle" fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="9">{sub}</text>
+    </g>
+  );
 }
 
 function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max - 1) + '…' : s;
 }
 
-function Node({ x, y, id, icon, label, sub, tone, hovered, setHovered }: {
-  x: number; y: number; id: string; icon: string; label: string; sub: string; tone: string;
-  hovered: string | null; setHovered: (s: string | null) => void;
-}) {
-  const active = hovered === id;
-  return (
-    <g onMouseEnter={() => setHovered(id)} onMouseLeave={() => setHovered(null)} style={{ cursor: 'pointer' }}>
-      <circle cx={x} cy={y} r={active ? 22 : 18} fill="rgba(24,24,27,0.85)" stroke={tone} strokeWidth={active ? 2 : 1.5} style={{ transition: 'r .15s' }} />
-      <foreignObject x={x - 12} y={y - 12} width="24" height="24" pointerEvents="none">
-        <div style={{ width:'100%', height:'100%', display:'flex', alignItems:'center', justifyContent:'center', color: tone }}>
-          <Icon name={icon} size={14} color={tone} />
-        </div>
-      </foreignObject>
-      <text x={x} y={y + 38} textAnchor="middle" fill="#e4e4e7" fontFamily="Space Grotesk, sans-serif" fontSize="11.5" fontWeight="500">{label}</text>
-      <text x={x} y={y + 52} textAnchor="middle" fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="10">{sub}</text>
-    </g>
-  );
-}
-
-function Leaf({ x, y, id, label, sub, tone, hovered, setHovered }: {
-  x: number; y: number; id: string; label: string; sub: string; tone: string;
-  hovered: string | null; setHovered: (s: string | null) => void;
-}) {
-  const active = hovered === id;
-  return (
-    <g onMouseEnter={() => setHovered(id)} onMouseLeave={() => setHovered(null)} style={{ cursor: 'pointer' }}>
-      <rect x={x - 12} y={y - 8} width="24" height="16" rx="4" fill="rgba(24,24,27,0.85)" stroke={tone} strokeWidth={active ? 1.5 : 1} opacity={active ? 1 : 0.85} />
-      <circle cx={x} cy={y} r="2" fill={tone} />
-      <text x={x + 18} y={y - 1} fill="#e4e4e7" fontFamily="Space Grotesk, sans-serif" fontSize="10.5">{label}</text>
-      <text x={x + 18} y={y + 11} fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="9.5">{sub}</text>
-    </g>
-  );
+function formatUptime(secs: number): string {
+  if (!secs) return '—';
+  const d = Math.floor(secs / 86400);
+  const h = Math.floor((secs % 86400) / 3600);
+  return `${d}d ${h}h`;
 }
