@@ -234,3 +234,15 @@ export const wanHealth = sqliteTable('wan_health', {
   rttMs:   real('rtt_ms'),
   lossPct: real('loss_pct'),
 });
+
+export const speedtestRuns = sqliteTable('speedtest_runs', {
+  id:           integer('id').primaryKey({ autoIncrement: true }),
+  ts:           integer('ts').notNull(),
+  downloadMbps: real('download_mbps').notNull(),
+  uploadMbps:   real('upload_mbps').notNull(),
+  pingMs:       real('ping_ms').notNull(),
+  isp:          text('isp'),
+  server:       text('server'),
+  source:       text('source').notNull(),
+  trigger:      text('trigger').notNull().default('manual'),
+});

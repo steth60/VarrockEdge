@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { ping, probeAll, PROBE_TARGETS } from '../system/ping';
-import { runSpeedTest } from '../system/speedtest';
+import { runSpeedTest, listSpeedtests } from '../system/speedtest';
 import { requireRole } from '../auth/middleware';
 
 const router = Router();
@@ -25,10 +25,15 @@ router.get('/speedtest/stream', requireRole('Owner'), (req, res) => {
     'X-Accel-Buffering': 'no',
   });
   res.flushHeaders?.();
-  const e = runSpeedTest();
+  const e = runSpeedTest('manual');
   e.on('data', (ev: any) => res.write(`data: ${JSON.stringify(ev)}\n\n`));
   e.on('end', () => res.end());
   req.on('close', () => { try { e.cancel(); } catch {} });
+});
+
+router.get('/speedtest/history', (req, res) => {
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit ?? 50)));
+  res.json({ runs: listSpeedtests(limit) });
 });
 
 export default router;

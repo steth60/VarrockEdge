@@ -1,6 +1,10 @@
 import { spawn, ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { config } from '../config';
+import { db } from '../db/client';
+import { speedtestRuns } from '../db/schema';
+import { desc } from 'drizzle-orm';
+import { log } from '../logger';
 
 export interface SpeedTestResult {
   downloadMbps: number;
@@ -26,14 +30,9 @@ const UPLOAD_SECS = 30;
 
 /**
  * Streaming speedtest runner. Emits SpeedTestEvent on `data`.
- *
- * On Linux with Ookla `speedtest` installed: parses --progress=yes
- * machine-readable output (one JSON object per line).
- * Otherwise: a faithful 60s simulator (3s ping → 30s download → 30s
- * upload → done) with a noisy curve so the UI graph looks alive in
- * dev / on appliances without the binary.
+ * Persists the final result to `speedtest_runs` so we keep history.
  */
-export function runSpeedTest(): EventEmitter & { cancel: () => void } {
+export function runSpeedTest(trigger: 'manual' | 'scheduled' = 'manual'): EventEmitter & { cancel: () => void } {
   const emitter = new EventEmitter() as EventEmitter & { cancel: () => void };
   let proc: ChildProcess | undefined;
   let cancelled = false;
@@ -54,6 +53,20 @@ export function runSpeedTest(): EventEmitter & { cancel: () => void } {
       ts: Date.now(),
       source,
     };
+    try {
+      db.insert(speedtestRuns).values({
+        ts: result.ts,
+        downloadMbps: result.downloadMbps,
+        uploadMbps:   result.uploadMbps,
+        pingMs:       result.pingMs,
+        isp:          result.isp,
+        server:       result.server,
+        source:       result.source,
+        trigger,
+      }).run();
+    } catch (err) {
+      log.warn({ err }, 'speedtest persist failed');
+    }
     emitter.emit('data', { phase: 'done', result } as SpeedTestEvent);
     emitter.emit('end');
   };
@@ -180,5 +193,54 @@ export function runSpeedTest(): EventEmitter & { cancel: () => void } {
     emitter.emit('data', { phase: 'error', msg: 'cancelled' } as SpeedTestEvent);
     emitter.emit('end');
   };
+}
+
+/**
+ * Returns the last `limit` speedtest rows, newest first.
+ */
+export function listSpeedtests(limit = 50) {
+  return db.select().from(speedtestRuns).orderBy(desc(speedtestRuns.ts)).limit(limit).all();
+}
+
+/**
+ * Cron-like scheduler — runs at 00:00 and 12:00 local time daily.
+ * Sleeps to the next slot, kicks off a "scheduled" run, recurses.
+ */
+let scheduledTimer: NodeJS.Timeout | null = null;
+let schedulerStarted = false;
+
+function nextScheduledRunMs(): number {
+  const now = new Date();
+  const next = new Date(now);
+  next.setMilliseconds(0); next.setSeconds(0); next.setMinutes(0);
+  const hr = now.getHours();
+  if (hr < 12) {
+    next.setHours(12);  // today's noon
+  } else {
+    next.setHours(0);   // tomorrow's midnight
+    next.setDate(next.getDate() + 1);
+  }
+  return next.getTime() - now.getTime();
+}
+
+export function startSpeedtestScheduler() {
+  if (schedulerStarted) return;
+  schedulerStarted = true;
+  const schedule = () => {
+    const delay = nextScheduledRunMs();
+    log.info({ inMs: delay, at: new Date(Date.now() + delay).toISOString() }, 'speedtest scheduled');
+    scheduledTimer = setTimeout(() => {
+      log.info('speedtest scheduled run firing');
+      const e = runSpeedTest('scheduled');
+      e.on('end', schedule);  // chain the next one once this finishes
+    }, delay);
+  };
+  schedule();
+}
+
+export function stopSpeedtestScheduler() {
+  if (scheduledTimer) clearTimeout(scheduledTimer);
+  scheduledTimer = null;
+  schedulerStarted = false;
 }
 

@@ -11,6 +11,8 @@ interface Snapshot {
   tempC: number | null;
   eth0: { rxMbps: number; txMbps: number };
   eth1: { rxMbps: number; txMbps: number };
+  loadAvg?: number[];
+  uptime?: number;
   ts: number;
 }
 
@@ -675,28 +677,58 @@ function SpeedTestGraph({ down, up }: { down: number[]; up: number[] }) {
 // went nowhere. If/when real QoS plumbing lands, this returns.
 
 function SystemMiniCard({ live }: { live: Snapshot | null }) {
-  const diskUsed  = live?.disk.used ?? 0;
-  const diskTotal = live?.disk.total ?? 0;
+  const diskUsed  = live?.disk?.used  ?? 0;
+  const diskTotal = live?.disk?.total ?? 0;
   const diskPct   = diskTotal > 0 ? (diskUsed / diskTotal) * 100 : 0;
+  const ramUsed  = live?.ram ?? 0;
+  const ramTotal = live?.ramTotal ?? 0;
+  const ramPct   = ramTotal > 0 ? (ramUsed / ramTotal) * 100 : 0;
+  // Format RAM as GB when over 1024 MB; MB otherwise.
+  const ramDisplay = ramTotal === 0 ? '—' : ramTotal >= 1024
+    ? `${(ramUsed / 1024).toFixed(1)} / ${(ramTotal / 1024).toFixed(1)} GB`
+    : `${ramUsed} / ${ramTotal} MB`;
+
   return (
     <Card padding="p-4">
       <div className="text-[11.5px] font-medium text-zinc-200 mb-3">System</div>
       <div className="space-y-3">
-        <SystemBar label="CPU" value={live?.cpu ?? 0} max={100} unit="%" color="#22d3ee" detail="load avg" />
-        <SystemBar label="RAM" value={live?.ram ?? 0} max={live?.ramTotal ?? 1024} unit=" MB" color="#a78bfa" detail={live ? `${Math.round((live.ram / (live.ramTotal || 1)) * 100)}% used` : '—'} />
-        <SystemBar label="Disk" value={diskPct} max={100} unit="%" color="#34d399" detail={diskTotal > 0 ? `${(diskUsed/1024).toFixed(1)} / ${(diskTotal/1024).toFixed(1)} GB` : '—'} />
+        <SystemBar
+          label="CPU"
+          rightLabel={live ? `${(live.cpu ?? 0).toFixed(1)}%` : '—'}
+          pct={live?.cpu ?? 0}
+          color="#22d3ee"
+          detail={live ? `load avg ${live.loadAvg?.map((v: number) => v.toFixed(2)).join(' ') ?? '—'}` : 'load avg'}
+        />
+        <SystemBar
+          label="RAM"
+          rightLabel={ramDisplay}
+          pct={ramPct}
+          color="#a78bfa"
+          detail={ramTotal === 0 ? 'collecting…' : `${ramPct.toFixed(0)}% used`}
+        />
+        <SystemBar
+          label="Disk"
+          rightLabel={diskTotal > 0 ? `${diskPct.toFixed(0)}%` : '—'}
+          pct={diskPct}
+          color="#34d399"
+          detail={diskTotal > 0 ? `${(diskUsed/1024).toFixed(1)} / ${(diskTotal/1024).toFixed(1)} GB` : 'collecting…'}
+        />
         {live?.tempC !== null && live?.tempC !== undefined ? (
-          <SystemBar label="Temp" value={live.tempC} max={80} unit="°C" color={live.tempC > 70 ? '#fb7185' : '#fbbf24'} detail={live.tempC > 70 ? 'hot' : 'nominal'} />
+          <SystemBar
+            label="Temp"
+            rightLabel={`${live.tempC.toFixed(0)}°C`}
+            pct={(live.tempC / 80) * 100}
+            color={live.tempC > 70 ? '#fb7185' : '#fbbf24'}
+            detail={live.tempC > 70 ? 'hot' : 'nominal'}
+          />
         ) : (
           <div>
             <div className="flex items-baseline justify-between mb-1">
               <span className="text-[10.5px] uppercase tracking-wider text-zinc-500">Temp</span>
               <span className="font-mono text-[11.5px] text-zinc-600">—</span>
             </div>
-            <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden">
-              <div className="h-full" style={{ width: '0%' }} />
-            </div>
-            <div className="text-[10px] text-zinc-600 mt-0.5">no thermal_zone0</div>
+            <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden" />
+            <div className="text-[10px] text-zinc-600 mt-0.5">no thermal sensor</div>
           </div>
         )}
       </div>
@@ -704,16 +736,16 @@ function SystemMiniCard({ live }: { live: Snapshot | null }) {
   );
 }
 
-function SystemBar({ label, value, max, unit, color, detail }: { label: string; value: number; max: number; unit: string; color: string; detail: string }) {
-  const pct = Math.min(100, (value / max) * 100);
+function SystemBar({ label, rightLabel, pct, color, detail }: { label: string; rightLabel: string; pct: number; color: string; detail: string }) {
+  const clamped = Math.max(0, Math.min(100, pct));
   return (
     <div>
       <div className="flex items-baseline justify-between mb-1">
         <span className="text-[10.5px] uppercase tracking-wider text-zinc-500">{label}</span>
-        <span className="font-mono text-[11.5px] text-zinc-200">{value.toFixed(value < 10 ? 1 : 0)}{unit}</span>
+        <span className="font-mono text-[11.5px] text-zinc-200">{rightLabel}</span>
       </div>
       <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden">
-        <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: color }} />
+        <div className="h-full rounded-full transition-all" style={{ width: `${clamped}%`, background: color }} />
       </div>
       <div className="text-[10px] text-zinc-600 mt-0.5">{detail}</div>
     </div>
