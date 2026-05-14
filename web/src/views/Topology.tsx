@@ -62,7 +62,7 @@ export function Topology() {
       </div>
 
       <Card padding="p-0" className="relative overflow-hidden">
-        <div className="relative grid-faint" style={{ height: 560 }}>
+        <div className="relative grid-faint" style={{ height: 640 }}>
           {data ? (
             <NetworkSVG data={data} hovered={hovered} setHovered={setHovered} showAnnotations={showAnnotations} svgRef={svgRef} />
           ) : (
@@ -112,29 +112,37 @@ function NetworkSVG({ data, hovered, setHovered, showAnnotations, svgRef }: {
   showAnnotations: boolean;
   svgRef: React.MutableRefObject<SVGSVGElement | null>;
 }) {
-  const W = 1100, H = 560;
-  const ovh   = { x:  90, y: 100 };
-  const cloud = { x: 220, y: 100 };
-  const edge  = { x: 480, y: 280 };
-  const lan   = { x: 760, y: 180 };
-  const vpn   = { x: 760, y: 400 };
+  const W = 1100, H = 640;
+  const ovh   = { x:  90, y: 110 };
+  const cloud = { x: 230, y: 110 };
+  const edge  = { x: 480, y: 320 };
+  const lan   = { x: 740, y: 210 };
+  const vpn   = { x: 740, y: 450 };
 
-  // Auto-distribute hosts around the LAN hub on a small arc.
-  const hosts = useMemo(() => distribute(data.lan.hosts.slice(0, 12), 920, 60, 320, 1100, 'lan').map((p, i) => ({
+  // Layout: two "zone" boxes on the right hold LAN hosts and VPN peers.
+  // Each zone is 360 wide × N tall; nodes are placed inside with a comfortable margin
+  // and labels truncated so nothing collides with the zone borders.
+  const LAN_BOX  = { x: 680, y:  60, w: 360, h: 280, hostColX: 900, minY: 105, maxY: 320 };
+  const VPN_BOX  = { x: 680, y: 360, w: 360, h: 240, peerColX: 900, minY: 405, maxY: 580 };
+
+  const hosts = useMemo(() => distribute(data.lan.hosts.slice(0, 8), LAN_BOX.hostColX, LAN_BOX.minY, LAN_BOX.maxY).map((p, i) => ({
     id: `lan-${i}`,
     x: p.x, y: p.y,
-    label: data.lan.hosts[i]!.hostname || data.lan.hosts[i]!.mac.slice(0, 8),
+    label: truncate(data.lan.hosts[i]!.hostname || data.lan.hosts[i]!.mac.slice(0, 8), 14),
     sub: data.lan.hosts[i]!.ip,
     tone: STATUS_COLOR[data.lan.hosts[i]!.source] ?? '#34d399',
   })), [data.lan.hosts]);
 
-  const peers = useMemo(() => distribute(data.vpn.peers.slice(0, 12), 920, 390, 540, 1080, 'vpn').map((p, i) => ({
+  const peers = useMemo(() => distribute(data.vpn.peers.slice(0, 6), VPN_BOX.peerColX, VPN_BOX.minY, VPN_BOX.maxY).map((p, i) => ({
     id: `vpn-${i}`,
     x: p.x, y: p.y,
-    label: data.vpn.peers[i]!.name,
+    label: truncate(data.vpn.peers[i]!.name, 14),
     sub: data.vpn.peers[i]!.allowedIps,
     tone: STATUS_COLOR[data.vpn.peers[i]!.status] ?? '#71717a',
   })), [data.vpn.peers]);
+
+  const lanOverflow = Math.max(0, data.lan.hosts.length - 8);
+  const vpnOverflow = Math.max(0, data.vpn.peers.length - 6);
 
   const linkOp = (a: string, b: string) => !hovered || hovered === a || hovered === b ? 1 : 0.25;
   const wanMbps = (data.wan.rxMbps + data.wan.txMbps).toFixed(1);
@@ -154,16 +162,16 @@ function NetworkSVG({ data, hovered, setHovered, showAnnotations, svgRef }: {
       </defs>
 
       <g opacity={hovered && hovered !== 'lan' ? 0.4 : 1}>
-        <rect x="680" y="40" width="380" height="280" rx="12" fill="rgba(34,211,238,0.04)" stroke="rgba(34,211,238,0.18)" strokeDasharray="4 4" />
-        <text x="700" y="62" fill="#22d3ee" fontFamily="JetBrains Mono, monospace" fontSize="11" opacity={showAnnotations ? 1 : 0}>{data.lan.cidr} · LAN</text>
+        <rect x={LAN_BOX.x} y={LAN_BOX.y} width={LAN_BOX.w} height={LAN_BOX.h} rx="12" fill="rgba(34,211,238,0.04)" stroke="rgba(34,211,238,0.18)" strokeDasharray="4 4" />
+        <text x={LAN_BOX.x + 20} y={LAN_BOX.y + 22} fill="#22d3ee" fontFamily="JetBrains Mono, monospace" fontSize="11" opacity={showAnnotations ? 1 : 0}>{data.lan.cidr} · LAN</text>
       </g>
       <g opacity={hovered && hovered !== 'vpn' ? 0.4 : 1}>
-        <rect x="680" y="360" width="380" height="180" rx="12" fill="rgba(167,139,250,0.04)" stroke="rgba(167,139,250,0.18)" strokeDasharray="4 4" />
-        <text x="700" y="382" fill="#a78bfa" fontFamily="JetBrains Mono, monospace" fontSize="11" opacity={showAnnotations ? 1 : 0}>{data.vpn.cidr} · wg0 :{data.vpn.port}</text>
+        <rect x={VPN_BOX.x} y={VPN_BOX.y} width={VPN_BOX.w} height={VPN_BOX.h} rx="12" fill="rgba(167,139,250,0.04)" stroke="rgba(167,139,250,0.18)" strokeDasharray="4 4" />
+        <text x={VPN_BOX.x + 20} y={VPN_BOX.y + 22} fill="#a78bfa" fontFamily="JetBrains Mono, monospace" fontSize="11" opacity={showAnnotations ? 1 : 0}>{data.vpn.cidr} · wg0 :{data.vpn.port}</text>
       </g>
       <g opacity={hovered && hovered !== 'cloud' ? 0.4 : 1}>
-        <rect x="40" y="40" width="340" height="180" rx="12" fill="rgba(82,82,91,0.04)" stroke="rgba(82,82,91,0.2)" strokeDasharray="4 4" />
-        <text x="60" y="62" fill="#a1a1aa" fontFamily="JetBrains Mono, monospace" fontSize="11" opacity={showAnnotations ? 1 : 0}>Internet · WAN ({data.wan.iface})</text>
+        <rect x="40" y="60" width="340" height="180" rx="12" fill="rgba(82,82,91,0.04)" stroke="rgba(82,82,91,0.2)" strokeDasharray="4 4" />
+        <text x="60" y="82" fill="#a1a1aa" fontFamily="JetBrains Mono, monospace" fontSize="11" opacity={showAnnotations ? 1 : 0}>Internet · WAN ({data.wan.iface})</text>
       </g>
 
       <line x1={ovh.x} y1={ovh.y} x2={cloud.x} y2={cloud.y} stroke="rgba(161,161,170,0.4)" strokeWidth="1.5" opacity={linkOp('ovh','cloud')} />
@@ -216,22 +224,33 @@ function NetworkSVG({ data, hovered, setHovered, showAnnotations, svgRef }: {
       {peers.map(p => <Leaf key={p.id} {...p} hovered={hovered} setHovered={setHovered} />)}
 
       {hosts.length === 0 && (
-        <text x={1000} y={200} textAnchor="middle" fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="10">no LAN hosts yet</text>
+        <text x={LAN_BOX.x + LAN_BOX.w / 2} y={LAN_BOX.y + LAN_BOX.h / 2} textAnchor="middle" fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="10">no LAN hosts yet</text>
       )}
       {peers.length === 0 && (
-        <text x={1000} y={460} textAnchor="middle" fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="10">no WG peers yet</text>
+        <text x={VPN_BOX.x + VPN_BOX.w / 2} y={VPN_BOX.y + VPN_BOX.h / 2} textAnchor="middle" fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="10">no WG peers yet</text>
+      )}
+      {lanOverflow > 0 && (
+        <text x={LAN_BOX.x + LAN_BOX.w - 14} y={LAN_BOX.y + LAN_BOX.h - 10} textAnchor="end" fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="9.5">+{lanOverflow} more</text>
+      )}
+      {vpnOverflow > 0 && (
+        <text x={VPN_BOX.x + VPN_BOX.w - 14} y={VPN_BOX.y + VPN_BOX.h - 10} textAnchor="end" fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="9.5">+{vpnOverflow} more</text>
       )}
     </svg>
   );
 }
 
-function distribute<T>(items: T[], colX: number, minY: number, maxY: number, _maxX: number, _kind: string) {
+function distribute<T>(items: T[], colX: number, minY: number, maxY: number) {
   if (items.length === 0) return [];
   const span = maxY - minY;
+  // Two-column layout offset for visual variety, but always inside the zone.
   return items.map((_, i) => ({
-    x: colX + ((i % 2) * 40 - 20),
+    x: colX + ((i % 2) * 30 - 15),
     y: minY + (items.length === 1 ? span / 2 : (span / (items.length - 1)) * i),
   }));
+}
+
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max - 1) + '…' : s;
 }
 
 function Node({ x, y, id, icon, label, sub, tone, hovered, setHovered }: {
@@ -260,10 +279,10 @@ function Leaf({ x, y, id, label, sub, tone, hovered, setHovered }: {
   const active = hovered === id;
   return (
     <g onMouseEnter={() => setHovered(id)} onMouseLeave={() => setHovered(null)} style={{ cursor: 'pointer' }}>
-      <rect x={x - 14} y={y - 9} width="28" height="18" rx="4" fill="rgba(24,24,27,0.85)" stroke={tone} strokeWidth={active ? 1.5 : 1} opacity={active ? 1 : 0.85} />
+      <rect x={x - 12} y={y - 8} width="24" height="16" rx="4" fill="rgba(24,24,27,0.85)" stroke={tone} strokeWidth={active ? 1.5 : 1} opacity={active ? 1 : 0.85} />
       <circle cx={x} cy={y} r="2" fill={tone} />
-      <text x={x + 22} y={y - 1} fill="#e4e4e7" fontFamily="Space Grotesk, sans-serif" fontSize="11">{label}</text>
-      <text x={x + 22} y={y + 11} fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="9.5">{sub}</text>
+      <text x={x + 18} y={y - 1} fill="#e4e4e7" fontFamily="Space Grotesk, sans-serif" fontSize="10.5">{label}</text>
+      <text x={x + 18} y={y + 11} fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="9.5">{sub}</text>
     </g>
   );
 }
