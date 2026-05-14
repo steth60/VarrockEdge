@@ -98,30 +98,104 @@ export interface AddPeerInput {
 export async function addPeer(input: AddPeerInput) {
   const server = ensureServer();
   if (!server) throw new Error('wg server not initialized');
-  const keys = input.providedPublicKey
-    ? { privateKey: null as string | null, publicKey: input.providedPublicKey, presharedKey: input.providedPresharedKey ?? '' }
-    : { ...(await genKeys()), privateKey: null as string | null };
-  if (!input.providedPublicKey) {
-    const full = await genKeys();
-    keys.privateKey = full.privateKey;
-    keys.publicKey = full.publicKey;
-    keys.presharedKey = full.presharedKey;
+  const kind = input.kind ?? 'road-warrior';
+
+  if (kind === 'site') {
+    if (!input.providedPublicKey) throw new Error('site link requires a remote public key');
+    if (!input.remoteSubnet) throw new Error('site link requires a remote subnet');
+    const psk = input.providedPresharedKey ?? (await genKeys()).presharedKey;
+    const row = db.insert(wgPeers).values({
+      name: input.name,
+      publicKey: input.providedPublicKey,
+      privateKey: null, // we never see the remote's private key
+      presharedKey: psk || null,
+      allowedIps: input.remoteSubnet,
+      keepalive: input.keepalive ?? 25,
+      kind: 'site',
+      remoteSubnet: input.remoteSubnet,
+      remoteEndpoint: input.remoteEndpoint ?? null,
+    }).returning().get();
+    await writeServerConfig();
+    await reload();
+    return row;
+  }
+
+  // road-warrior: we generate the keypair so we can issue them a complete .conf
+  let privateKey: string | null = null;
+  let publicKey = input.providedPublicKey ?? '';
+  let presharedKey = input.providedPresharedKey ?? '';
+  if (!publicKey) {
+    const k = await genKeys();
+    privateKey = k.privateKey;
+    publicKey = k.publicKey;
+    if (!presharedKey) presharedKey = k.presharedKey;
   }
   const allowed = input.allowedIps ?? `${nextTunnelIp(server.tunnelCidr)}/32`;
   const row = db.insert(wgPeers).values({
     name: input.name,
-    publicKey: keys.publicKey,
-    privateKey: keys.privateKey,
-    presharedKey: keys.presharedKey || null,
+    publicKey,
+    privateKey,
+    presharedKey: presharedKey || null,
     allowedIps: allowed,
     keepalive: input.keepalive ?? 25,
-    kind: input.kind ?? 'road-warrior',
-    remoteSubnet: input.remoteSubnet ?? null,
-    remoteEndpoint: input.remoteEndpoint ?? null,
+    kind: 'road-warrior',
+    remoteSubnet: null,
+    remoteEndpoint: null,
   }).returning().get();
   await writeServerConfig();
   await reload();
   return row;
+}
+
+export async function rotateServerKeys(): Promise<{ publicKey: string }> {
+  const s = ensureServer();
+  if (!s) throw new Error('server not initialized');
+  const k = await genKeys();
+  db.update(wgServer).set({ privateKey: k.privateKey, publicKey: k.publicKey }).where(eq(wgServer.id, s.id)).run();
+  await writeServerConfig();
+  await reload();
+  return { publicKey: k.publicKey };
+}
+
+export async function wipe() {
+  db.delete(wgPeers).run();
+  db.delete(wgServer).run();
+  if (config.onLinux) {
+    await exec('systemctl', ['stop', 'wg-quick@wg0'], { allowFailure: true });
+    try {
+      const fs = await import('node:fs');
+      if (fs.existsSync(WG_CONF)) fs.unlinkSync(WG_CONF);
+    } catch { /* ignore */ }
+  }
+}
+
+export async function restart() {
+  if (!config.onLinux) return;
+  await exec('systemctl', ['restart', 'wg-quick@wg0'], { allowFailure: true });
+}
+
+export function renderRemotePeerSnippet(peerId: number): string {
+  const peer = db.select().from(wgPeers).where(eq(wgPeers.id, peerId)).get();
+  if (!peer || peer.kind !== 'site') throw new Error('not a site peer');
+  const server = ensureServer();
+  if (!server) throw new Error('server not initialized');
+  const lines = [
+    `# Add this [Peer] block to the REMOTE side's wg0.conf`,
+    `# to complete the site-to-site link with VarrokEdge.`,
+    `[Peer]`,
+    `# VarrokEdge edge — link "${peer.name}"`,
+    `PublicKey = ${server.publicKey}`,
+  ];
+  if (peer.presharedKey) lines.push(`PresharedKey = ${peer.presharedKey}`);
+  if (server.publicEndpoint) {
+    lines.push(`Endpoint = ${server.publicEndpoint}:${server.listenPort}`);
+  } else {
+    lines.push(`Endpoint = YOUR.EDGE.IP:${server.listenPort}  # set publicEndpoint in Tunnel settings first`);
+  }
+  // Advertise our LAN as what they should route to via this peer.
+  lines.push(`AllowedIPs = 10.0.0.0/24`);
+  lines.push(`PersistentKeepalive = ${peer.keepalive}`);
+  return lines.join('\n') + '\n';
 }
 
 export async function removePeer(id: number) {

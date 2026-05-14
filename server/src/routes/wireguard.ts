@@ -4,7 +4,7 @@ import QRCode from 'qrcode';
 import { db } from '../db/client';
 import { wgPeers, wgServer } from '../db/schema';
 import { eq } from 'drizzle-orm';
-import { addPeer, listPeers, removePeer, renderPeerConf, serverInfo, ensureServerAsync } from '../system/wireguard';
+import { addPeer, listPeers, removePeer, renderPeerConf, serverInfo, ensureServerAsync, rotateServerKeys, wipe, restart, renderRemotePeerSnippet, writeServerConfig, reload } from '../system/wireguard';
 
 const router = Router();
 
@@ -38,7 +38,81 @@ router.patch('/server', async (req, res) => {
   const s = serverInfo();
   if (!s) return res.status(409).json({ error: 'server not initialized' });
   db.update(wgServer).set(parse.data).where(eq(wgServer.id, s.id)).run();
+  // Re-render so changes show up in current peer .conf downloads and the live tunnel.
+  await writeServerConfig();
+  await reload();
+  res.json({ server: serverInfo() });
+});
+
+// ─── Danger zone ────────────────────────────────────────────────────
+router.post('/restart', async (_req, res) => {
+  try { await restart(); res.json({ ok: true }); }
+  catch (err: any) { res.status(500).json({ error: err?.message ?? 'restart failed' }); }
+});
+
+router.post('/server/rotate', async (_req, res) => {
+  try { const r = await rotateServerKeys(); res.json({ ok: true, publicKey: r.publicKey }); }
+  catch (err: any) { res.status(500).json({ error: err?.message ?? 'rotate failed' }); }
+});
+
+router.delete('/server', async (_req, res) => {
+  try { await wipe(); res.json({ ok: true }); }
+  catch (err: any) { res.status(500).json({ error: err?.message ?? 'wipe failed' }); }
+});
+
+// ─── Site-to-site ───────────────────────────────────────────────────
+router.get('/sites', async (_req, res) => {
+  const peers = await listPeers();
+  res.json({ sites: peers.filter(p => p.kind === 'site') });
+});
+
+const siteSchema = z.object({
+  name: z.string().min(1),
+  remoteSubnet: z.string().regex(/^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/, 'expected CIDR like 10.20.0.0/24'),
+  remotePublicKey: z.string().min(40),
+  remoteEndpoint: z.string().optional(),
+  presharedKey: z.string().optional(),
+  keepalive: z.number().int().min(0).max(3600).optional(),
+});
+
+router.post('/sites', async (req, res) => {
+  const parse = siteSchema.safeParse(req.body);
+  if (!parse.success) return res.status(400).json({ error: 'invalid input', issues: parse.error.issues });
+  try {
+    await ensureServerAsync();
+    const row = await addPeer({
+      name: parse.data.name,
+      kind: 'site',
+      remoteSubnet: parse.data.remoteSubnet,
+      remoteEndpoint: parse.data.remoteEndpoint || undefined,
+      providedPublicKey: parse.data.remotePublicKey,
+      providedPresharedKey: parse.data.presharedKey,
+      keepalive: parse.data.keepalive,
+    });
+    res.json({ site: row });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message ?? 'failed' });
+  }
+});
+
+router.delete('/sites/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
+  await removePeer(id);
   res.json({ ok: true });
+});
+
+router.get('/sites/:id/remote-config', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
+  try {
+    const snippet = renderRemotePeerSnippet(id);
+    res.setHeader('Content-Type', 'text/plain');
+    res.setHeader('Content-Disposition', `attachment; filename="remote-peer-${id}.conf"`);
+    res.send(snippet);
+  } catch (err: any) {
+    res.status(404).json({ error: err?.message ?? 'not found' });
+  }
 });
 
 router.get('/peers', async (_req, res) => {

@@ -2,7 +2,16 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { runMigrations } from '../../server/src/db/migrate';
 import { db } from '../../server/src/db/client';
 import { wgPeers, wgServer } from '../../server/src/db/schema';
-import { ensureServerAsync, renderServerConfig, renderPeerConf, genKeys } from '../../server/src/system/wireguard';
+import {
+  ensureServerAsync,
+  renderServerConfig,
+  renderPeerConf,
+  renderRemotePeerSnippet,
+  rotateServerKeys,
+  addPeer,
+  genKeys,
+} from '../../server/src/system/wireguard';
+import { eq } from 'drizzle-orm';
 
 beforeAll(async () => {
   runMigrations();
@@ -25,6 +34,71 @@ describe('wireguard', () => {
     expect(conf).toMatch(/^ListenPort = \d+/m);
     expect(conf).toMatch(/PostUp =.*MASQUERADE/);
     expect(conf).toMatch(/PostDown =.*MASQUERADE/);
+  });
+
+  it('site peer: addPeer creates the row and rendered config carries Endpoint + remote subnet', async () => {
+    db.delete(wgPeers).run();
+    const remotePub = (await genKeys()).publicKey;
+    const peer = await addPeer({
+      name: 'london',
+      kind: 'site',
+      remoteSubnet: '10.20.0.0/24',
+      remoteEndpoint: '203.0.113.42:51820',
+      providedPublicKey: remotePub,
+    });
+    expect(peer.kind).toBe('site');
+    expect(peer.allowedIps).toBe('10.20.0.0/24');
+    expect(peer.remoteEndpoint).toBe('203.0.113.42:51820');
+    const conf = renderServerConfig();
+    expect(conf).toContain(`PublicKey = ${remotePub}`);
+    expect(conf).toContain('AllowedIPs = 10.20.0.0/24');
+    expect(conf).toContain('Endpoint = 203.0.113.42:51820');
+  });
+
+  it('site peer: responder role has no Endpoint in the rendered config', async () => {
+    db.delete(wgPeers).run();
+    const remotePub = (await genKeys()).publicKey;
+    await addPeer({
+      name: 'remote-pop',
+      kind: 'site',
+      remoteSubnet: '10.30.0.0/24',
+      providedPublicKey: remotePub,
+      // no remoteEndpoint → responder
+    });
+    const conf = renderServerConfig();
+    const peerBlock = conf.split('[Peer]')[1] ?? '';
+    expect(peerBlock).not.toMatch(/Endpoint =/);
+  });
+
+  it('renderRemotePeerSnippet uses server publicEndpoint and produces a valid [Peer] block', async () => {
+    db.delete(wgPeers).run();
+    // Set a public endpoint so the snippet has a real Endpoint line.
+    const s = db.select().from(wgServer).get()!;
+    db.update(wgServer).set({ publicEndpoint: '51.38.114.207' }).where(eq(wgServer.id, s.id)).run();
+    const remotePub = (await genKeys()).publicKey;
+    const peer = await addPeer({
+      name: 'paris',
+      kind: 'site',
+      remoteSubnet: '10.40.0.0/24',
+      providedPublicKey: remotePub,
+    });
+    const snippet = renderRemotePeerSnippet(peer.id);
+    expect(snippet).toMatch(/^\[Peer\]/m);
+    expect(snippet).toContain(`PublicKey = ${db.select().from(wgServer).get()!.publicKey}`);
+    expect(snippet).toMatch(/Endpoint = 51\.38\.114\.207:\d+/);
+    expect(snippet).toContain('AllowedIPs = 10.0.0.0/24');
+  });
+
+  it('rotateServerKeys swaps the key and existing peer .conf reflects the new pubkey', async () => {
+    db.delete(wgPeers).run();
+    // Add a road-warrior with generated keys so we can re-render its .conf.
+    const before = await addPeer({ name: 'phone', kind: 'road-warrior' });
+    const oldServer = db.select().from(wgServer).get()!;
+    const { publicKey: newPub } = await rotateServerKeys();
+    expect(newPub).not.toBe(oldServer.publicKey);
+    const conf = renderPeerConf(before.id);
+    expect(conf).toContain(`PublicKey = ${newPub}`);
+    expect(conf).not.toContain(`PublicKey = ${oldServer.publicKey}`);
   });
 
   it('renderPeerConf emits the server pubkey and AllowedIPs', () => {
