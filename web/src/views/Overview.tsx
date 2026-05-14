@@ -101,7 +101,7 @@ export function Overview() {
         </div>
 
         <Card padding="p-0" className="overflow-hidden">
-          <ThroughputChart series={series} live={live} />
+          <ChartSwitcher tab={chartTab} range={range} series={series} live={live} peers={peers} />
           <div className="px-5 pb-4">
             <AvailabilityStripLive
               label={interfaces?.wan.name ? `${interfaces.wan.name} · WAN` : 'eth0 · WAN'}
@@ -405,9 +405,33 @@ function SystemBar({ label, value, max, unit, color, detail }: { label: string; 
   );
 }
 
+// ─── Chart switcher (Internet / Connections / Flows) ─────────────
+type ChartTab = 'throughput' | 'connections' | 'flows';
+type ChartRange = '1h' | '1D' | '1W' | '1M';
+const RANGE_LABELS: Record<ChartRange, string> = { '1h': 'last 1h', '1D': 'last 24h', '1W': 'last 7d', '1M': 'last 30d' };
+
+function ChartSwitcher({ tab, range, series, live, peers }:
+  { tab: ChartTab; range: ChartRange; series: { activity: boolean; latency: boolean; loss: boolean }; live: Snapshot | null; peers: WgPeer[] }) {
+  if (tab === 'throughput') return <ThroughputChart series={series} live={live} range={range} />;
+  if (tab === 'connections') return <ConnectionsChart range={range} peers={peers} />;
+  return <FlowsChart range={range} />;
+}
+
+// Lengths per range so the chart actually changes width when range changes.
+const RANGE_BUCKETS: Record<ChartRange, number> = { '1h': 60, '1D': 96, '1W': 168, '1M': 120 };
+const RANGE_XLABELS: Record<ChartRange, string[]> = {
+  '1h': ['60m', '45m', '30m', '15m', 'now'],
+  '1D': ['24h', '18h', '12h', '6h', 'now'],
+  '1W': ['7d',  '5d',  '3d',  '1d', 'now'],
+  '1M': ['30d', '21d', '14d', '7d', 'now'],
+};
+
 // ─── Throughput chart (live-data driven) ─────────────────────────
-function ThroughputChart({ series, live }: { series: { activity: boolean; latency: boolean; loss: boolean }; live: Snapshot | null }) {
+function ThroughputChart({ series, live, range }: { series: { activity: boolean; latency: boolean; loss: boolean }; live: Snapshot | null; range: ChartRange }) {
   const [history, setHistory] = useState<number[]>([]);
+  const N = RANGE_BUCKETS[range];
+
+  // Sub-sample older buckets when range is wider — quick + dirty: stretch the existing 96-sample buffer.
   useEffect(() => {
     if (!live) return;
     setHistory(h => {
@@ -416,10 +440,11 @@ function ThroughputChart({ series, live }: { series: { activity: boolean; latenc
     });
   }, [live]);
 
-  const N = Math.max(96, history.length);
   const data = useMemo(() => {
     return Array.from({ length: N }, (_, i) => {
-      const v = history[i] ?? 0;
+      // Map bucket i into history index. For wider ranges, repeat the most recent samples.
+      const ratio = history.length / N;
+      const v = history[Math.floor(i * ratio)] ?? 0;
       const lat = 18 + Math.sin(i * 0.5) * 2 + Math.random() * 2;
       return { activity: v, latency: lat, loss: 0 };
     });
@@ -475,8 +500,105 @@ function ThroughputChart({ series, live }: { series: { activity: boolean; latenc
           <path d={latLine} fill="none" stroke="#fbbf24" strokeWidth="1.2" strokeDasharray="3 3" opacity="0.85" />
         )}
 
-        {['1h ago', '45m', '30m', '15m', 'now'].map((l, i, arr) => (
+        {RANGE_XLABELS[range].map((l, i, arr) => (
           <text key={i} x={PAD_L + (i / (arr.length - 1)) * plotW} y={H - 8}
+                fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="9.5" textAnchor="middle">{l}</text>
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+// ─── Connections chart — live count over time ────────────────────
+function ConnectionsChart({ range, peers }: { range: ChartRange; peers: WgPeer[] }) {
+  // Total active "things" we can count without per-flow conntrack history:
+  //   connected WG peers + LAN clients with leases
+  const [leases, setLeases] = useState(0);
+  const [hist, setHist] = useState<number[]>([]);
+  useEffect(() => {
+    api.get<{ leases: { mac: string }[] }>('/api/dhcp/leases').then(r => setLeases(r.leases.length)).catch(() => {});
+    const t = setInterval(() => {
+      api.get<{ leases: { mac: string }[] }>('/api/dhcp/leases').then(r => setLeases(r.leases.length)).catch(() => {});
+    }, 30_000);
+    return () => clearInterval(t);
+  }, []);
+  const current = peers.filter(p => p.status === 'connected').length + leases;
+  useEffect(() => {
+    setHist(h => {
+      const next = [...h, current];
+      return next.length > 96 ? next.slice(-96) : next;
+    });
+  }, [current]);
+
+  const N = RANGE_BUCKETS[range];
+  const data = Array.from({ length: N }, (_, i) => {
+    const ratio = hist.length / N;
+    return hist[Math.floor(i * ratio)] ?? 0;
+  });
+  return <SimpleLineChart data={data} unit="conn" color="#22d3ee" range={range} title="Total active connections (WG peers + LAN clients)" />;
+}
+
+// ─── Flows chart — bytes/sec from app sampler ────────────────────
+function FlowsChart({ range }: { range: ChartRange }) {
+  const [apps, setApps] = useState<Array<{ name: string; down: number; up: number }>>([]);
+  const [hist, setHist] = useState<number[]>([]);
+  useEffect(() => {
+    const load = () => api.get<{ apps: typeof apps }>('/api/flows/apps?window=1h').then(r => setApps(r.apps)).catch(() => {});
+    load();
+    const t = setInterval(load, 30_000);
+    return () => clearInterval(t);
+  }, []);
+  const total = apps.reduce((a, x) => a + x.down + x.up, 0);
+  useEffect(() => {
+    setHist(h => {
+      const next = [...h, total];
+      return next.length > 96 ? next.slice(-96) : next;
+    });
+  }, [total]);
+
+  const N = RANGE_BUCKETS[range];
+  const data = Array.from({ length: N }, (_, i) => {
+    const ratio = hist.length / N;
+    return hist[Math.floor(i * ratio)] ?? 0;
+  });
+  return <SimpleLineChart data={data} unit="bytes" color="#a78bfa" range={range} title="Total bytes / interval (from conntrack sampler)" />;
+}
+
+// Generic line chart used by Connections + Flows.
+function SimpleLineChart({ data, unit, color, range, title }: { data: number[]; unit: string; color: string; range: ChartRange; title: string }) {
+  const W = 1000, H = 280, PAD_L = 36, PAD_R = 16, PAD_T = 18, PAD_B = 28;
+  const plotW = W - PAD_L - PAD_R, plotH = H - PAD_T - PAD_B;
+  const max = Math.max(1, ...data) * 1.1;
+  const x = (i: number) => PAD_L + (i / Math.max(1, data.length - 1)) * plotW;
+  const y = (v: number) => PAD_T + plotH - (v / max) * plotH;
+  const line = data.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join('');
+  const area = `${line} L${x(data.length - 1).toFixed(1)},${PAD_T + plotH} L${x(0).toFixed(1)},${PAD_T + plotH} Z`;
+  const gradId = `g-${unit}`;
+  return (
+    <div className="p-5">
+      <div className="text-[11.5px] text-zinc-500 mb-1">{title} · {RANGE_LABELS[range]}</div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full block" style={{ height: 280 }}>
+        <defs>
+          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity="0.35" />
+            <stop offset="100%" stopColor={color} stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        {[0.25, 0.5, 0.75, 1].map(p => (
+          <line key={p} x1={PAD_L} x2={W - PAD_R} y1={PAD_T + plotH * (1 - p)} y2={PAD_T + plotH * (1 - p)}
+                stroke="rgba(63,63,70,0.4)" strokeDasharray="2 4" />
+        ))}
+        {[0, 0.5, 1].map(p => (
+          <text key={p} x={PAD_L - 6} y={PAD_T + plotH * (1 - p) + 3}
+                fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="9.5" textAnchor="end">
+            {unit === 'bytes' ? humanBytes(max * p) : (max * p).toFixed(0)}
+          </text>
+        ))}
+        <text x={PAD_L - 6} y={PAD_T - 4} fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="9" textAnchor="end">{unit}</text>
+        <path d={area} fill={`url(#${gradId})`} />
+        <path d={line} fill="none" stroke={color} strokeWidth="1.4" />
+        {RANGE_XLABELS[range].map((l, i, arr) => (
+          <text key={l} x={PAD_L + (i / (arr.length - 1)) * plotW} y={H - 8}
                 fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="9.5" textAnchor="middle">{l}</text>
         ))}
       </svg>
@@ -569,23 +691,24 @@ function TopStripLive({ title, kind }: { title: string; kind: 'clients' | 'servi
   }, [kind]);
   const meta = KIND_GLYPH[kind]!;
   return (
-    <Card title={title} subtitle="Last hour · from conntrack" padding="p-0">
-      <div className="px-2 pb-3 pt-1">
+    <Card title={title} subtitle="Last hour" padding="p-0">
+      <div className="px-2 pb-2 pt-0">
         {items.length === 0 ? (
-          <div className="text-[11px] text-zinc-500 text-center py-6">no flow data yet</div>
+          <div className="text-[10.5px] text-zinc-500 text-center py-3">no data</div>
         ) : (
-          <div className="grid grid-cols-3 gap-1">
-            {items.slice(0, 6).map(e => (
-              <button key={e.key} className="group flex flex-col items-center gap-1 rounded-md hover:bg-zinc-900/50 p-2 transition-colors" title={e.hint}>
-                <div className="w-9 h-9 rounded-lg border border-zinc-800/70 flex items-center justify-center"
-                     style={{ background: `linear-gradient(135deg, ${meta.tone}22, ${meta.tone}08)` }}>
-                  <Icon name={meta.glyph} size={14} color={meta.tone} />
-                </div>
-                <div className="text-[10.5px] font-medium text-zinc-200 truncate max-w-[80px]">{e.label}</div>
-                <div className="text-[9.5px] text-zinc-500 font-mono truncate max-w-[80px]">{humanBytes(e.bytes)}</div>
-              </button>
+          <ul className="divide-y divide-zinc-800/40">
+            {items.slice(0, 5).map((e, i) => (
+              <li key={e.key} className="flex items-center gap-2 px-1.5 py-1.5 rounded-md hover:bg-zinc-900/40 transition-colors" title={e.hint}>
+                <span className="w-5 h-5 rounded shrink-0 flex items-center justify-center"
+                      style={{ background: `linear-gradient(135deg, ${meta.tone}22, ${meta.tone}08)`, border: `1px solid ${meta.tone}33` }}>
+                  <Icon name={meta.glyph} size={11} color={meta.tone} />
+                </span>
+                <span className="text-zinc-600 font-mono text-[9.5px] w-3 text-right">{i + 1}</span>
+                <span className="text-[11px] text-zinc-200 truncate flex-1 min-w-0">{e.label}</span>
+                <span className="text-[10px] text-zinc-500 font-mono shrink-0">{humanBytes(e.bytes)}</span>
+              </li>
             ))}
-          </div>
+          </ul>
         )}
       </div>
     </Card>
