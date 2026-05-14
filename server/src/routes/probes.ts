@@ -17,12 +17,18 @@ router.get('/ping', async (req, res) => {
   res.json(await ping(host));
 });
 
-router.post('/speedtest', requireRole('Owner'), async (_req, res) => {
-  try {
-    res.json(await runSpeedTest());
-  } catch (err: any) {
-    res.status(500).json({ error: err?.message ?? 'speedtest failed' });
-  }
+router.get('/speedtest/stream', requireRole('Owner'), (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders?.();
+  const e = runSpeedTest();
+  e.on('data', (ev: any) => res.write(`data: ${JSON.stringify(ev)}\n\n`));
+  e.on('end', () => res.end());
+  req.on('close', () => { try { e.cancel(); } catch {} });
 });
 
 export default router;

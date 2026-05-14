@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Card, StatusPill, Button, Icon, KV, Badge, LegendDot, Select } from '../components/primitives';
 import { useSSE } from '../api/sse';
 import { api } from '../api/client';
@@ -15,7 +15,10 @@ interface Snapshot {
 }
 
 interface SystemInfo { hostname: string; kernel: string; uptime: number; version: string; loadAvg: number[]; container: string; }
-interface Interfaces { wan: { name: string; ip: string; role: string; rxMbps: number; txMbps: number }; lan: { name: string; ip: string; role: string; rxMbps: number; txMbps: number } }
+interface Interfaces {
+  wan: { name: string; ip: string | null; role: string; rxMbps: number; txMbps: number; publicIp?: string | null };
+  lan: { name: string; ip: string;        role: string; rxMbps: number; txMbps: number };
+}
 interface Threat { id: number; severity: string; status: string }
 interface WgPeer { id: number; name: string; status: string; kind: string }
 interface Bucket { hour: number; critical: number; high: number; medium: number; low: number }
@@ -47,7 +50,6 @@ export function Overview() {
       <aside className="col-span-12 xl:col-span-3 space-y-4">
         <ApplianceCard sysinfo={sysinfo} peers={peers} threats={threats} leasesCount={leasesCount} />
         <WanCard interfaces={interfaces} live={live} />
-        <LatencyPills />
         <SpeedTestCard />
         <PriorityCard />
         <SystemMiniCard live={live} />
@@ -223,31 +225,126 @@ function ApplianceGlyph() {
 }
 
 function WanCard({ interfaces, live }: { interfaces: Interfaces | null; live: Snapshot | null }) {
+  // Keep a 60-sample rolling history of total WAN bps for the sparkline (~84s @ 1.4s SSE tick).
+  const [hist, setHist] = useState<number[]>([]);
+  useEffect(() => {
+    if (!live) return;
+    setHist(h => {
+      const next = [...h, live.eth0.rxMbps + live.eth0.txMbps];
+      return next.length > 60 ? next.slice(-60) : next;
+    });
+  }, [live]);
+
+  const totalDl = live?.eth0.rxMbps ?? 0;
+  const totalUl = live?.eth0.txMbps ?? 0;
+  const fmtRate = (mbps: number) => mbps < 1 ? `${(mbps * 1000).toFixed(0)} Kbps` : `${mbps.toFixed(1)} Mbps`;
+
   return (
     <Card padding="p-4">
-      <div className="flex items-center gap-3 mb-3">
-        <button className="flex items-center gap-1.5 text-[11.5px]">
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" style={{ boxShadow: '0 0 6px #34d399' }} />
-          <span className="text-zinc-100 font-medium">{interfaces?.wan.name ?? 'eth0'}</span>
-        </button>
-        <div className="ml-auto text-[10px] text-emerald-300 font-mono">100%</div>
-      </div>
-      <div className="flex items-center gap-2">
-        <div className="w-7 h-7 rounded-md bg-zinc-900/70 border border-zinc-800/70 flex items-center justify-center">
-          <Icon name="Cloud" size={14} className="text-cyan-300" />
+      <div className="flex items-center gap-3 mb-2">
+        <div className="w-8 h-8 rounded-md bg-zinc-900/70 border border-zinc-800/70 flex items-center justify-center">
+          <Icon name="Cloud" size={15} className="text-cyan-300" />
         </div>
-        <div>
-          <div className="text-[12.5px] font-medium text-zinc-100">{interfaces?.wan.role ?? 'Public WAN'}</div>
-          <div className="text-[10.5px] text-zinc-500 font-mono">{interfaces?.wan.ip ?? '—'}</div>
+        <div className="flex-1 min-w-0">
+          <div className="text-[12.5px] font-medium text-zinc-100 truncate">{interfaces?.wan.role ?? 'WAN'}</div>
+          <div className="text-[10.5px] text-zinc-500 font-mono truncate">{interfaces?.wan.name ?? 'eth0'}</div>
+        </div>
+        <span className="text-[10.5px] text-emerald-300 font-mono">100%</span>
+      </div>
+
+      <div className="space-y-1 text-[11.5px]">
+        <div className="flex items-center justify-between">
+          <span className="text-zinc-500">Public IP</span>
+          <span className="font-mono text-cyan-300">{interfaces?.wan.publicIp ?? '…'}</span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-zinc-500">Local IP</span>
+          <span className="font-mono text-zinc-300">{interfaces?.wan.ip ?? '—'}</span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-zinc-500">Throughput</span>
+          <span className="font-mono">
+            <span className="text-emerald-300">↓ {fmtRate(totalDl)}</span>
+            <span className="text-zinc-700 mx-1.5">·</span>
+            <span className="text-cyan-300">↑ {fmtRate(totalUl)}</span>
+          </span>
         </div>
       </div>
-      <div className="divider mt-3 pt-3 space-y-1.5">
-        <RailRow k="Throughput ↓" v={live ? `${live.eth0.rxMbps.toFixed(1)} Mbps` : '—'} mono color="text-emerald-300" />
-        <RailRow k="Throughput ↑" v={live ? `${live.eth0.txMbps.toFixed(1)} Mbps` : '—'} mono color="text-cyan-300" />
-        <RailRow k="LAN ↓"        v={live ? `${live.eth1.rxMbps.toFixed(1)} Mbps` : '—'} mono />
-        <RailRow k="LAN ↑"        v={live ? `${live.eth1.txMbps.toFixed(1)} Mbps` : '—'} mono />
+
+      {/* Throughput sparkline */}
+      <div className="mt-2 -mx-1">
+        <WanSparkline data={hist} />
       </div>
+
+      {/* Latency pills (auto-coloured by RTT to Cloudflare/Google/Quad9) */}
+      <div className="mt-2"><LatencyTriple /></div>
     </Card>
+  );
+}
+
+function WanSparkline({ data }: { data: number[] }) {
+  if (data.length === 0) {
+    return <div className="h-10 rounded-md bg-zinc-900/30 border border-zinc-800/40" />;
+  }
+  const W = 240, H = 40, PAD = 2;
+  const max = Math.max(0.05, ...data) * 1.1;
+  const x = (i: number) => PAD + (i / Math.max(1, data.length - 1)) * (W - PAD * 2);
+  const y = (v: number) => H - PAD - (v / max) * (H - PAD * 2);
+  const line = data.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join('');
+  const area = `${line} L${x(data.length - 1).toFixed(1)},${H - PAD} L${x(0).toFixed(1)},${H - PAD} Z`;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full block" style={{ height: 40 }} preserveAspectRatio="none">
+      <defs>
+        <linearGradient id="wanSpark" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#22d3ee" stopOpacity="0.45" />
+          <stop offset="100%" stopColor="#22d3ee" stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <path d={area} fill="url(#wanSpark)" />
+      <path d={line} fill="none" stroke="#22d3ee" strokeWidth="1.3" />
+    </svg>
+  );
+}
+
+interface PingTargetLite { host: string; label: string; avgMs: number | null; lossPct: number; ok: boolean }
+const SHORT_PILLS: Array<{ host: string; short: string }> = [
+  { host: '1.1.1.1', short: 'CF' },
+  { host: '8.8.8.8', short: 'GG' },
+  { host: '9.9.9.9', short: 'Q9' },
+];
+
+function LatencyTriple() {
+  const [targets, setTargets] = useState<PingTargetLite[]>([]);
+  useEffect(() => {
+    const load = () => api.get<{ targets: PingTargetLite[] }>('/api/probes/latency').then(r => setTargets(r.targets)).catch(() => {});
+    load();
+    const t = setInterval(load, 30_000);
+    return () => clearInterval(t);
+  }, []);
+  // Pick the three we care about for the rail pill row.
+  const wanted = SHORT_PILLS.map(p => ({
+    ...p,
+    target: targets.find(t => t.host === p.host),
+  }));
+  return (
+    <div className="grid grid-cols-3 gap-1.5">
+      {wanted.map(({ host, short, target }) => {
+        const ms = target?.avgMs ?? null;
+        const ok = target?.ok ?? false;
+        // Traffic-light: <30 green, 30–100 amber, >100 red.
+        const tone =
+          !ok || ms === null    ? 'border-zinc-800/60 bg-zinc-900/40 text-zinc-500'
+          : ms < 30             ? 'border-emerald-400/30 bg-emerald-400/5 text-emerald-300'
+          : ms < 100            ? 'border-amber-400/30 bg-amber-400/5 text-amber-300'
+          :                       'border-rose-400/30 bg-rose-400/5 text-rose-300';
+        return (
+          <div key={host} className={`flex items-center justify-center gap-1.5 h-7 rounded-md border ${tone}`} title={`${host} avg ${ms?.toFixed(0) ?? '—'}ms`}>
+            <span className="text-[9.5px] font-mono text-zinc-500">{short}</span>
+            <span className="font-mono text-[11px]">{ms !== null && ok ? `${ms.toFixed(0)}ms` : '—'}</span>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -295,38 +392,248 @@ function LatencyPills() {
   );
 }
 
-interface SpeedResult { downloadMbps: number; uploadMbps: number; pingMs: number; isp: string | null; source: string }
+interface SpeedResult { downloadMbps: number; uploadMbps: number; pingMs: number; isp: string | null; server: string | null; source: string }
+interface SpeedEvent { phase: 'ping' | 'download' | 'upload' | 'done' | 'error'; mbps?: number; pingMs?: number; elapsed?: number; result?: SpeedResult }
 
 function SpeedTestCard() {
-  const [running, setRunning] = useState(false);
+  const [phase, setPhase] = useState<'idle' | 'ping' | 'download' | 'upload' | 'done' | 'error'>('idle');
+  const [downSamples, setDownSamples] = useState<number[]>([]);
+  const [upSamples, setUpSamples] = useState<number[]>([]);
+  const [livePing, setLivePing] = useState<number | null>(null);
   const [result, setResult] = useState<SpeedResult | null>(null);
-  const runTest = async () => {
-    setRunning(true);
-    try {
-      const r = await api.post<SpeedResult>('/api/probes/speedtest');
-      setResult(r);
-    } catch (err: any) {
-      alert(err?.message ?? 'speed test failed');
-    } finally {
-      setRunning(false);
-    }
+  const [progress, setProgress] = useState(0); // 0..1 within current phase
+  const esRef = useRef<EventSource | null>(null);
+
+  const start = () => {
+    if (phase !== 'idle' && phase !== 'done' && phase !== 'error') return;
+    setDownSamples([]);
+    setUpSamples([]);
+    setLivePing(null);
+    setResult(null);
+    setPhase('ping');
+    setProgress(0);
+    const es = new EventSource('/api/probes/speedtest/stream', { withCredentials: true });
+    esRef.current = es;
+    es.onmessage = (m) => {
+      try {
+        const ev: SpeedEvent = JSON.parse(m.data);
+        if (ev.phase === 'ping') {
+          setPhase('ping');
+          if (ev.pingMs !== undefined) setLivePing(ev.pingMs);
+          if (ev.elapsed !== undefined) setProgress(ev.elapsed);
+        } else if (ev.phase === 'download') {
+          setPhase('download');
+          if (ev.mbps !== undefined) setDownSamples(s => [...s, ev.mbps!]);
+          if (ev.elapsed !== undefined) setProgress(ev.elapsed);
+        } else if (ev.phase === 'upload') {
+          setPhase('upload');
+          if (ev.mbps !== undefined) setUpSamples(s => [...s, ev.mbps!]);
+          if (ev.elapsed !== undefined) setProgress(ev.elapsed);
+        } else if (ev.phase === 'done' && ev.result) {
+          setPhase('done');
+          setResult(ev.result);
+          setProgress(1);
+          es.close();
+        } else if (ev.phase === 'error') {
+          setPhase('error');
+          es.close();
+        }
+      } catch { /* ignore */ }
+    };
+    es.onerror = () => {
+      // EventSource closes on network error or non-200; surface as error
+      // unless we've already received the `done` event.
+      setPhase(p => (p === 'done' ? p : 'error'));
+      es.close();
+    };
   };
-  const down = result?.downloadMbps ?? 0;
-  const up   = result?.uploadMbps ?? 0;
-  const png  = result?.pingMs ?? 0;
+
+  useEffect(() => () => { esRef.current?.close(); }, []);
+
+  if (phase === 'idle') {
+    return (
+      <Card padding="p-4">
+        <div className="grid grid-cols-3 gap-2 text-center">
+          {(['Down', 'Up', 'Ping'] as const).map(l => (
+            <div key={l}>
+              <div className="text-[10px] uppercase tracking-wider text-zinc-500">{l}</div>
+              <div className="font-mono text-[14px] text-zinc-600 mt-1">—</div>
+              <div className="text-[10px] text-zinc-500">{l === 'Ping' ? 'ms' : 'Mbps'}</div>
+            </div>
+          ))}
+        </div>
+        <Button variant="primary" size="md" icon="Gauge" className="w-full mt-3" onClick={start}>ISP speed test</Button>
+      </Card>
+    );
+  }
+
+  if (phase === 'done' && result) {
+    return (
+      <Card padding="p-4">
+        <div className="grid grid-cols-3 gap-2 text-center">
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-zinc-500">Down</div>
+            <div className="font-mono text-[16px] text-emerald-300 mt-1">{result.downloadMbps.toFixed(1)}</div>
+            <div className="text-[10px] text-zinc-500">Mbps avg</div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-zinc-500">Up</div>
+            <div className="font-mono text-[16px] text-cyan-300 mt-1">{result.uploadMbps.toFixed(1)}</div>
+            <div className="text-[10px] text-zinc-500">Mbps avg</div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-zinc-500">Ping</div>
+            <div className="font-mono text-[16px] text-zinc-100 mt-1">{result.pingMs.toFixed(0)}</div>
+            <div className="text-[10px] text-zinc-500">ms</div>
+          </div>
+        </div>
+        {(downSamples.length > 0 || upSamples.length > 0) && (
+          <div className="mt-3"><SpeedTestGraph down={downSamples} up={upSamples} /></div>
+        )}
+        <div className="flex items-center justify-between gap-2 mt-3">
+          {result.source === 'synthetic'
+            ? <span className="text-[10px] text-amber-300/80">dev mode — synthetic</span>
+            : result.isp ? <span className="text-[10px] text-zinc-500 font-mono truncate">{result.isp}</span> : <span />}
+          <Button variant="ghost" size="sm" icon="RotateCw" onClick={start}>Run again</Button>
+        </div>
+      </Card>
+    );
+  }
+
+  // Running (ping / download / upload) or error
+  const showDown = phase === 'download' || downSamples.length > 0;
+  const showUp   = phase === 'upload'   || upSamples.length > 0;
+  const lastDown = downSamples[downSamples.length - 1] ?? 0;
+  const lastUp   = upSamples[upSamples.length - 1] ?? 0;
   return (
     <Card padding="p-4">
       <div className="grid grid-cols-3 gap-2 text-center">
-        <div><div className="text-[10px] uppercase tracking-wider text-zinc-500">Down</div><div className="font-mono text-[14px] text-emerald-300 mt-1">{running ? '…' : result ? down.toFixed(1) : '—'}</div><div className="text-[10px] text-zinc-500">Mbps</div></div>
-        <div><div className="text-[10px] uppercase tracking-wider text-zinc-500">Up</div><div className="font-mono text-[14px] text-cyan-300 mt-1">{running ? '…' : result ? up.toFixed(1) : '—'}</div><div className="text-[10px] text-zinc-500">Mbps</div></div>
-        <div><div className="text-[10px] uppercase tracking-wider text-zinc-500">Ping</div><div className="font-mono text-[14px] text-zinc-100 mt-1">{running ? '…' : result ? png.toFixed(0) : '—'}</div><div className="text-[10px] text-zinc-500">ms</div></div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-zinc-500">Down</div>
+          <div className="font-mono text-[14px] text-emerald-300 mt-1">{showDown ? lastDown.toFixed(1) : '…'}</div>
+          <div className="text-[10px] text-zinc-500">Mbps</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-zinc-500">Up</div>
+          <div className="font-mono text-[14px] text-cyan-300 mt-1">{showUp ? lastUp.toFixed(1) : '…'}</div>
+          <div className="text-[10px] text-zinc-500">Mbps</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-zinc-500">Ping</div>
+          <div className="font-mono text-[14px] text-zinc-100 mt-1">{livePing !== null ? livePing.toFixed(0) : '…'}</div>
+          <div className="text-[10px] text-zinc-500">ms</div>
+        </div>
       </div>
-      <Button variant={running ? 'secondary' : 'primary'} size="md" icon={running ? 'Loader2' : 'Gauge'} className={`w-full mt-3 ${running ? '[&_svg]:animate-spin' : ''}`} onClick={runTest} disabled={running}>
-        {running ? 'Testing…' : 'ISP speed test'}
-      </Button>
-      {result?.source === 'synthetic' && <p className="text-[10px] text-amber-300/80 mt-2 text-center">dev mode — synthetic result</p>}
-      {result?.isp && result.source === 'ookla' && <p className="text-[10px] text-zinc-500 mt-2 text-center font-mono">{result.isp}</p>}
+
+      <div className="mt-3"><SpeedTestGraph down={downSamples} up={upSamples} /></div>
+
+      <div className="mt-2 space-y-1">
+        <div className="flex items-center justify-between text-[10px] text-zinc-500">
+          <span>{phase === 'ping' ? 'Latency probe' : phase === 'download' ? 'Download · ~30s' : phase === 'upload' ? 'Upload · ~30s' : 'Error'}</span>
+          <span className="font-mono">{Math.round(progress * 100)}%</span>
+        </div>
+        <div className="h-1 rounded-full bg-zinc-800 overflow-hidden">
+          <div className="h-full rounded-full transition-all"
+               style={{ width: `${Math.max(2, progress * 100)}%`, background: phase === 'upload' ? '#22d3ee' : '#34d399' }} />
+        </div>
+      </div>
     </Card>
+  );
+}
+
+function SpeedTestGraph({ down, up }: { down: number[]; up: number[] }) {
+  // 120 buckets total: first 60 for download, second 60 for upload.
+  // We map samples linearly into their half so the curve grows over time.
+  const N = 120;
+  const map = (xs: number[], side: 'down' | 'up'): Array<{ v: number; side: 'down' | 'up' }> => {
+    if (xs.length === 0) return [];
+    return Array.from({ length: 60 }, (_, i) => {
+      const idx = Math.floor((i / 60) * xs.length);
+      return { v: xs[idx] ?? 0, side };
+    });
+  };
+  const downPts = map(down, 'down');
+  const upPts   = map(up,   'up');
+  const series: Array<{ v: number; side: 'down' | 'up' } | null> = [
+    ...downPts,
+    ...Array.from({ length: 60 - downPts.length }, () => null),
+    ...upPts,
+    ...Array.from({ length: 60 - upPts.length },   () => null),
+  ].slice(0, N);
+
+  const W = 360, H = 110, PAD_L = 24, PAD_R = 8, PAD_T = 8, PAD_B = 18;
+  const plotW = W - PAD_L - PAD_R, plotH = H - PAD_T - PAD_B;
+  const allValues = series.filter(s => s !== null).map(s => (s as any).v);
+  const max = Math.max(1, ...allValues) * 1.1;
+  const x = (i: number) => PAD_L + (i / (N - 1)) * plotW;
+  const y = (v: number) => PAD_T + plotH - (v / max) * plotH;
+  const midX = PAD_L + (60 / (N - 1)) * plotW;
+
+  // Build separate path strings per side so they get separate colors.
+  const buildPath = (side: 'down' | 'up') => {
+    let started = false;
+    const cmds: string[] = [];
+    series.forEach((s, i) => {
+      if (s && s.side === side) {
+        cmds.push(`${started ? 'L' : 'M'}${x(i).toFixed(1)},${y(s.v).toFixed(1)}`);
+        started = true;
+      } else {
+        started = false;
+      }
+    });
+    return cmds.join('');
+  };
+  const buildArea = (side: 'down' | 'up') => {
+    let started = false;
+    let startI = 0;
+    let endI = 0;
+    const cmds: string[] = [];
+    series.forEach((s, i) => {
+      if (s && s.side === side) {
+        if (!started) startI = i;
+        cmds.push(`${started ? 'L' : 'M'}${x(i).toFixed(1)},${y(s.v).toFixed(1)}`);
+        endI = i;
+        started = true;
+      } else if (started) {
+        cmds.push(`L${x(endI).toFixed(1)},${PAD_T + plotH} L${x(startI).toFixed(1)},${PAD_T + plotH} Z`);
+        started = false;
+      }
+    });
+    if (started) cmds.push(`L${x(endI).toFixed(1)},${PAD_T + plotH} L${x(startI).toFixed(1)},${PAD_T + plotH} Z`);
+    return cmds.join(' ');
+  };
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full block" style={{ height: 110 }}>
+      <defs>
+        <linearGradient id="stDown" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#34d399" stopOpacity="0.4" />
+          <stop offset="100%" stopColor="#34d399" stopOpacity="0" />
+        </linearGradient>
+        <linearGradient id="stUp" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#22d3ee" stopOpacity="0.4" />
+          <stop offset="100%" stopColor="#22d3ee" stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      {/* mid-divider */}
+      <line x1={midX} y1={PAD_T} x2={midX} y2={H - PAD_B} stroke="rgba(63,63,70,0.55)" strokeDasharray="3 3" />
+      <text x={midX} y={H - 4} textAnchor="middle" fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="9">30s</text>
+      <text x={PAD_L} y={H - 4} textAnchor="start" fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="9">DL</text>
+      <text x={W - PAD_R} y={H - 4} textAnchor="end" fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="9">UL</text>
+      {/* y-axis ticks */}
+      {[0.5, 1].map(p => (
+        <text key={p} x={PAD_L - 4} y={PAD_T + plotH * (1 - p) + 3} textAnchor="end" fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="9">
+          {(max * p).toFixed(max < 10 ? 1 : 0)}
+        </text>
+      ))}
+      <text x={PAD_L - 4} y={PAD_T - 1} textAnchor="end" fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="9">Mbps</text>
+      {/* areas */}
+      <path d={buildArea('down')} fill="url(#stDown)" />
+      <path d={buildArea('up')}   fill="url(#stUp)" />
+      {/* lines */}
+      <path d={buildPath('down')} fill="none" stroke="#34d399" strokeWidth="1.4" />
+      <path d={buildPath('up')}   fill="none" stroke="#22d3ee" strokeWidth="1.4" />
+    </svg>
   );
 }
 
