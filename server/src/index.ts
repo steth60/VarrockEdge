@@ -75,10 +75,22 @@ async function main() {
   app.use('/api/services', requireAuth, servicesRoutes);
   app.use('/api/system',   requireAuth, systemRoutes);
 
-  // Static SPA
+  // Static SPA. Vite emits content-hashed asset filenames (index-<sha>.js,
+  // ...css) which are safe to cache forever. But index.html itself must not
+  // cache, or browsers serve a stale entry-point and never pick up rebuilds.
   if (fs.existsSync(config.publicDir)) {
-    app.use(express.static(config.publicDir, { maxAge: '1h', index: false }));
+    app.use(express.static(config.publicDir, {
+      index: false,
+      setHeaders: (res, filepath) => {
+        if (filepath.endsWith('.html')) {
+          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        } else {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        }
+      },
+    }));
     app.get(/^\/(?!api).*/, (_req, res) => {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       res.sendFile(path.join(config.publicDir, 'index.html'));
     });
   } else {

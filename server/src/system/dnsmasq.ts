@@ -81,16 +81,10 @@ export interface Lease {
 }
 
 export function parseLeases(): Lease[] {
-  if (!config.onLinux || !fs.existsSync(LEASES_FILE)) {
-    return [
-      { hostname: 'runner-01',       ip: '10.0.0.52',  mac: 'aa:bb:cc:11:22:33', expiry: '23h 12m', expiresAt: Date.now() + 23 * 3600_000 },
-      { hostname: 'nas-truenas',     ip: '10.0.0.61',  mac: '6c:b3:11:8e:a2:0d', expiry: '11h 04m', expiresAt: Date.now() + 11 * 3600_000 },
-      { hostname: 'ws-callum',       ip: '10.0.0.74',  mac: 'a4:83:e7:21:c8:91', expiry: '20h 51m', expiresAt: Date.now() + 20 * 3600_000 },
-      { hostname: 'pi-monitor',      ip: '10.0.0.82',  mac: 'dc:a6:32:4b:7e:11', expiry: '19h 33m', expiresAt: Date.now() + 19 * 3600_000 },
-      { hostname: 'switch-uap-lite', ip: '10.0.0.110', mac: '78:8a:20:34:5b:c2', expiry: '22h 02m', expiresAt: Date.now() + 22 * 3600_000 },
-      { hostname: 'gh-runner-02',    ip: '10.0.0.118', mac: 'bc:24:11:0e:91:4a', expiry: '17h 41m', expiresAt: Date.now() + 17 * 3600_000 },
-    ];
-  }
+  // No synthetic data — if the leases file isn't readable (macOS dev,
+  // dnsmasq not running, or no clients have asked for an IP yet), return
+  // empty so the UI honestly reflects what the appliance knows.
+  if (!config.onLinux || !fs.existsSync(LEASES_FILE)) return [];
   try {
     const data = fs.readFileSync(LEASES_FILE, 'utf8');
     return data.split('\n').filter(Boolean).map(line => {
