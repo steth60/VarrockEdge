@@ -307,11 +307,46 @@ function WanSparkline({ data }: { data: number[] }) {
 }
 
 interface PingTargetLite { host: string; label: string; avgMs: number | null; lossPct: number; ok: boolean }
-const SHORT_PILLS: Array<{ host: string; short: string }> = [
-  { host: '1.1.1.1', short: 'CF' },
-  { host: '8.8.8.8', short: 'GG' },
-  { host: '9.9.9.9', short: 'Q9' },
+const SHORT_PILLS: Array<{ host: string; provider: 'cloudflare' | 'google' | 'quad9'; label: string }> = [
+  { host: '1.1.1.1', provider: 'cloudflare', label: 'Cloudflare DNS' },
+  { host: '8.8.8.8', provider: 'google',     label: 'Google DNS' },
+  { host: '9.9.9.9', provider: 'quad9',      label: 'Quad9 DNS' },
 ];
+
+function ProviderMark({ provider }: { provider: 'cloudflare' | 'google' | 'quad9' }) {
+  // Inline marks rendered geometrically — no external image deps, no copyright
+  // issue. Each is recognisable enough to identify the provider in the pill.
+  if (provider === 'cloudflare') {
+    // Cloud silhouette in Cloudflare orange.
+    return (
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-label="Cloudflare">
+        <path
+          d="M19.4 14.1c.4-1.4-.3-2.7-1.7-3a4 4 0 0 0-1-.1l-.1-.4a4.7 4.7 0 0 0-9.2-.5 3.6 3.6 0 0 0-3.1 5.6c.3.4.7.7 1.1.9.1 0 .2 0 .2.2l9 0c2.4 0 4.5-1 4.8-2.7Z"
+          fill="#f48120"
+        />
+        <path d="M20.5 11.4c0-.1 0-.2-.1-.2-.7.1-1.4.4-1.9.9-.1.1-.1.2 0 .3.6.8.8 1.8.6 2.7-.1.4-.3.8-.6 1.1-.1.1-.1.2 0 .2l.8.4c1.3.4 2.7-.4 3-1.7.2-1.4-.5-2.8-1.8-3.7Z" fill="#faae40" />
+      </svg>
+    );
+  }
+  if (provider === 'google') {
+    // The four-colour G dot ring.
+    return (
+      <svg width="14" height="14" viewBox="0 0 24 24" aria-label="Google">
+        <path d="M21.6 12.2c0-.7-.1-1.3-.2-1.9H12v3.7h5.4c-.2 1.2-.9 2.3-1.9 3v2.4h3.1c1.8-1.7 2.9-4.2 2.9-7.2Z" fill="#4285f4" />
+        <path d="M12 22c2.6 0 4.7-.9 6.3-2.3l-3.1-2.4c-.9.6-2 .9-3.2.9-2.5 0-4.6-1.6-5.3-3.9H3.5v2.5C5.1 19.7 8.3 22 12 22Z" fill="#34a853" />
+        <path d="M6.7 14.3a6 6 0 0 1 0-3.8V8H3.5a10 10 0 0 0 0 8l3.2-1.7Z" fill="#fbbc04" />
+        <path d="M12 6.4c1.4 0 2.7.5 3.7 1.4l2.8-2.8C16.7 3.4 14.6 2.5 12 2.5 8.3 2.5 5.1 4.8 3.5 8l3.2 2.5c.7-2.3 2.8-3.9 5.3-3.9Z" fill="#ea4335" />
+      </svg>
+    );
+  }
+  // Quad9 — a teal segmented ring with a "9".
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" aria-label="Quad9">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="#3b82f6" strokeWidth="2.5" strokeDasharray="3 1.8" />
+      <text x="12" y="16" textAnchor="middle" fontFamily="Space Grotesk, sans-serif" fontWeight="700" fontSize="11" fill="#3b82f6">9</text>
+    </svg>
+  );
+}
 
 function LatencyTriple() {
   const [targets, setTargets] = useState<PingTargetLite[]>([]);
@@ -321,25 +356,24 @@ function LatencyTriple() {
     const t = setInterval(load, 30_000);
     return () => clearInterval(t);
   }, []);
-  // Pick the three we care about for the rail pill row.
-  const wanted = SHORT_PILLS.map(p => ({
-    ...p,
-    target: targets.find(t => t.host === p.host),
-  }));
+  const wanted = SHORT_PILLS.map(p => ({ ...p, target: targets.find(t => t.host === p.host) }));
   return (
     <div className="grid grid-cols-3 gap-1.5">
-      {wanted.map(({ host, short, target }) => {
+      {wanted.map(({ host, provider, label, target }) => {
         const ms = target?.avgMs ?? null;
         const ok = target?.ok ?? false;
-        // Traffic-light: <30 green, 30–100 amber, >100 red.
         const tone =
           !ok || ms === null    ? 'border-zinc-800/60 bg-zinc-900/40 text-zinc-500'
           : ms < 30             ? 'border-emerald-400/30 bg-emerald-400/5 text-emerald-300'
           : ms < 100            ? 'border-amber-400/30 bg-amber-400/5 text-amber-300'
           :                       'border-rose-400/30 bg-rose-400/5 text-rose-300';
         return (
-          <div key={host} className={`flex items-center justify-center gap-1.5 h-7 rounded-md border ${tone}`} title={`${host} avg ${ms?.toFixed(0) ?? '—'}ms`}>
-            <span className="text-[9.5px] font-mono text-zinc-500">{short}</span>
+          <div
+            key={host}
+            className={`flex items-center justify-center gap-1.5 h-7 rounded-md border ${tone}`}
+            title={`${label} (${host}) avg ${ms?.toFixed(0) ?? '—'}ms`}
+          >
+            <ProviderMark provider={provider} />
             <span className="font-mono text-[11px]">{ms !== null && ok ? `${ms.toFixed(0)}ms` : '—'}</span>
           </div>
         );
@@ -736,9 +770,9 @@ const RANGE_XLABELS: Record<ChartRange, string[]> = {
 // ─── Throughput chart (live-data driven) ─────────────────────────
 function ThroughputChart({ series, live, range }: { series: { activity: boolean; latency: boolean; loss: boolean }; live: Snapshot | null; range: ChartRange }) {
   const [history, setHistory] = useState<number[]>([]);
+  const [latencyHist, setLatencyHist] = useState<Array<{ minute: number; avgMs: number | null; lossPct: number | null }>>([]);
   const N = RANGE_BUCKETS[range];
 
-  // Sub-sample older buckets when range is wider — quick + dirty: stretch the existing 96-sample buffer.
   useEffect(() => {
     if (!live) return;
     setHistory(h => {
@@ -747,71 +781,119 @@ function ThroughputChart({ series, live, range }: { series: { activity: boolean;
     });
   }, [live]);
 
+  // Pull real latency/loss history (60 most-recent minutes) so the secondary
+  // series is honest data — not synthetic noise.
+  useEffect(() => {
+    const load = () => api.get<{ buckets: typeof latencyHist }>('/api/metrics/history').then(r => setLatencyHist(r.buckets)).catch(() => {});
+    load();
+    const t = setInterval(load, 30_000);
+    return () => clearInterval(t);
+  }, []);
+
   const data = useMemo(() => {
     return Array.from({ length: N }, (_, i) => {
-      // Map bucket i into history index. For wider ranges, repeat the most recent samples.
-      const ratio = history.length / N;
-      const v = history[Math.floor(i * ratio)] ?? 0;
-      const lat = 18 + Math.sin(i * 0.5) * 2 + Math.random() * 2;
-      return { activity: v, latency: lat, loss: 0 };
+      // Activity: stretch the in-memory ring buffer into the requested window.
+      const aRatio = history.length / N;
+      const activity = history[Math.floor(i * aRatio)] ?? 0;
+      // Latency: same stretch over real history.
+      const lRatio = latencyHist.length / N;
+      const lat = latencyHist[Math.floor(i * lRatio)]?.avgMs ?? null;
+      const loss = latencyHist[Math.floor(i * lRatio)]?.lossPct ?? null;
+      return { activity, latency: lat, loss };
     });
-  }, [history, N]);
+  }, [history, latencyHist, N]);
 
-  const W = 1000, H = 280, PAD_L = 36, PAD_R = 40, PAD_T = 18, PAD_B = 28;
+  const hasAnyActivity = history.some(v => v > 0.001);
+  const hasAnyLatency  = latencyHist.some(b => b.avgMs !== null);
+
+  // Use a tall viewBox; viewer scales it to whatever the parent's width is.
+  // 16:5 ratio gives a chart that comfortably fills modern wide cards.
+  const W = 1000, H = 320, PAD_L = 40, PAD_R = 44, PAD_T = 22, PAD_B = 30;
   const plotW = W - PAD_L - PAD_R, plotH = H - PAD_T - PAD_B;
-  const maxAct = Math.max(2, ...data.map(d => d.activity)) * 1.05;
-  const maxLat = Math.max(...data.map(d => d.latency)) * 1.2;
+  const maxAct = Math.max(0.5, ...data.map(d => d.activity)) * 1.1;
+  const maxLat = Math.max(1, ...data.map(d => d.latency ?? 0)) * 1.2;
   const x = (i: number) => PAD_L + (i / Math.max(1, N - 1)) * plotW;
   const yA = (v: number) => PAD_T + plotH - (v / maxAct) * plotH;
   const yL = (v: number) => PAD_T + plotH - (v / maxLat) * plotH;
 
   const actLine = data.map((d, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${yA(d.activity).toFixed(1)}`).join('');
   const actArea = `${actLine} L${x(N - 1).toFixed(1)},${PAD_T + plotH} L${x(0).toFixed(1)},${PAD_T + plotH} Z`;
-  const latLine = data.map((d, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${yL(d.latency).toFixed(1)}`).join('');
+  // For the latency line skip null gaps so we don't draw straight to zero.
+  const latSegments: string[] = [];
+  let cur = '';
+  data.forEach((d, i) => {
+    if (d.latency !== null) {
+      cur += `${cur ? 'L' : 'M'}${x(i).toFixed(1)},${yL(d.latency).toFixed(1)}`;
+    } else if (cur) {
+      latSegments.push(cur);
+      cur = '';
+    }
+  });
+  if (cur) latSegments.push(cur);
 
   return (
-    <div className="p-5">
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full block" style={{ height: 280 }}>
-        <defs>
-          <linearGradient id="actFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#22d3ee" stopOpacity="0.35" />
-            <stop offset="100%" stopColor="#22d3ee" stopOpacity="0" />
-          </linearGradient>
-        </defs>
-        {[0.25, 0.5, 0.75, 1].map(p => (
-          <line key={p} x1={PAD_L} x2={W - PAD_R} y1={PAD_T + plotH * (1 - p)} y2={PAD_T + plotH * (1 - p)}
-                stroke="rgba(63,63,70,0.4)" strokeDasharray="2 4" />
-        ))}
-        {[0, 0.5, 1].map(p => (
-          <text key={p} x={PAD_L - 6} y={PAD_T + plotH * (1 - p) + 3}
-                fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="9.5" textAnchor="end">
-            {(maxAct * p).toFixed(maxAct < 10 ? 1 : 0)}
-          </text>
-        ))}
-        <text x={PAD_L - 6} y={PAD_T - 4} fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="9" textAnchor="end">Mbps</text>
-        {[0, 0.5, 1].map(p => (
-          <text key={p} x={W - PAD_R + 4} y={PAD_T + plotH * (1 - p) + 3}
-                fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="9.5" textAnchor="start">
-            {(maxLat * p).toFixed(0)}
-          </text>
-        ))}
-        <text x={W - PAD_R + 4} y={PAD_T - 4} fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="9" textAnchor="start">ms</text>
+    <div className="p-5 h-full flex flex-col">
+      <div className="relative flex-1 min-h-[260px]">
+        <svg viewBox={`0 0 ${W} ${H}`} className="absolute inset-0 w-full h-full block" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="actFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#22d3ee" stopOpacity="0.35" />
+              <stop offset="100%" stopColor="#22d3ee" stopOpacity="0" />
+            </linearGradient>
+          </defs>
+          {[0.25, 0.5, 0.75, 1].map(p => (
+            <line key={p} x1={PAD_L} x2={W - PAD_R} y1={PAD_T + plotH * (1 - p)} y2={PAD_T + plotH * (1 - p)}
+                  stroke="rgba(63,63,70,0.4)" strokeDasharray="2 4" vectorEffect="non-scaling-stroke" />
+          ))}
+          {/* Left axis: Mbps (activity). Hidden if no real data. */}
+          {hasAnyActivity && (
+            <>
+              {[0, 0.5, 1].map(p => (
+                <text key={p} x={PAD_L - 6} y={PAD_T + plotH * (1 - p) + 4}
+                      fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="11" textAnchor="end">
+                  {(maxAct * p).toFixed(maxAct < 10 ? 1 : 0)}
+                </text>
+              ))}
+              <text x={PAD_L - 6} y={PAD_T - 6} fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="10" textAnchor="end">Mbps</text>
+            </>
+          )}
+          {/* Right axis: ms (latency). Hidden if no real data. */}
+          {hasAnyLatency && (
+            <>
+              {[0, 0.5, 1].map(p => (
+                <text key={p} x={W - PAD_R + 6} y={PAD_T + plotH * (1 - p) + 4}
+                      fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="11" textAnchor="start">
+                  {(maxLat * p).toFixed(0)}
+                </text>
+              ))}
+              <text x={W - PAD_R + 6} y={PAD_T - 6} fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="10" textAnchor="start">ms</text>
+            </>
+          )}
 
-        {series.activity && (
-          <>
-            <path d={actArea} fill="url(#actFill)" />
-            <path d={actLine} fill="none" stroke="#22d3ee" strokeWidth="1.4" strokeLinejoin="round" />
-          </>
-        )}
-        {series.latency && (
-          <path d={latLine} fill="none" stroke="#fbbf24" strokeWidth="1.2" strokeDasharray="3 3" opacity="0.85" />
-        )}
+          {series.activity && hasAnyActivity && (
+            <>
+              <path d={actArea} fill="url(#actFill)" vectorEffect="non-scaling-stroke" />
+              <path d={actLine} fill="none" stroke="#22d3ee" strokeWidth="1.6" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+            </>
+          )}
+          {series.latency && hasAnyLatency && latSegments.map((d, i) => (
+            <path key={i} d={d} fill="none" stroke="#fbbf24" strokeWidth="1.2" strokeDasharray="3 3" opacity="0.85" vectorEffect="non-scaling-stroke" />
+          ))}
+          {series.loss && hasAnyLatency && data.map((d, i) => (d.loss && d.loss > 0.1)
+            ? <rect key={i} x={x(i) - 3} y={PAD_T + plotH - Math.min(d.loss, 5) / 5 * plotH} width="6" height={Math.min(d.loss, 5) / 5 * plotH} fill="#fb7185" opacity="0.55" />
+            : null)}
 
-        {RANGE_XLABELS[range].map((l, i, arr) => (
-          <text key={i} x={PAD_L + (i / (arr.length - 1)) * plotW} y={H - 8}
-                fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="9.5" textAnchor="middle">{l}</text>
-        ))}
-      </svg>
+          {RANGE_XLABELS[range].map((l, i, arr) => (
+            <text key={i} x={PAD_L + (i / (arr.length - 1)) * plotW} y={H - 10}
+                  fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="11" textAnchor="middle">{l}</text>
+          ))}
+        </svg>
+        {!hasAnyActivity && !hasAnyLatency && (
+          <div className="absolute inset-0 flex items-center justify-center text-[12px] text-zinc-500 font-mono">
+            no throughput / latency samples yet
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -873,7 +955,7 @@ function FlowsChart({ range }: { range: ChartRange }) {
 
 // Generic line chart used by Connections + Flows.
 function SimpleLineChart({ data, unit, color, range, title }: { data: number[]; unit: string; color: string; range: ChartRange; title: string }) {
-  const W = 1000, H = 280, PAD_L = 36, PAD_R = 16, PAD_T = 18, PAD_B = 28;
+  const W = 1000, H = 320, PAD_L = 40, PAD_R = 16, PAD_T = 22, PAD_B = 30;
   const plotW = W - PAD_L - PAD_R, plotH = H - PAD_T - PAD_B;
   const max = Math.max(1, ...data) * 1.1;
   const x = (i: number) => PAD_L + (i / Math.max(1, data.length - 1)) * plotW;
@@ -881,34 +963,44 @@ function SimpleLineChart({ data, unit, color, range, title }: { data: number[]; 
   const line = data.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join('');
   const area = `${line} L${x(data.length - 1).toFixed(1)},${PAD_T + plotH} L${x(0).toFixed(1)},${PAD_T + plotH} Z`;
   const gradId = `g-${unit}`;
+  const hasAny = data.some(v => v > 0);
   return (
-    <div className="p-5">
+    <div className="p-5 h-full flex flex-col">
       <div className="text-[11.5px] text-zinc-500 mb-1">{title} · {RANGE_LABELS[range]}</div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full block" style={{ height: 280 }}>
-        <defs>
-          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={color} stopOpacity="0.35" />
-            <stop offset="100%" stopColor={color} stopOpacity="0" />
-          </linearGradient>
-        </defs>
-        {[0.25, 0.5, 0.75, 1].map(p => (
-          <line key={p} x1={PAD_L} x2={W - PAD_R} y1={PAD_T + plotH * (1 - p)} y2={PAD_T + plotH * (1 - p)}
-                stroke="rgba(63,63,70,0.4)" strokeDasharray="2 4" />
-        ))}
-        {[0, 0.5, 1].map(p => (
-          <text key={p} x={PAD_L - 6} y={PAD_T + plotH * (1 - p) + 3}
-                fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="9.5" textAnchor="end">
-            {unit === 'bytes' ? humanBytes(max * p) : (max * p).toFixed(0)}
-          </text>
-        ))}
-        <text x={PAD_L - 6} y={PAD_T - 4} fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="9" textAnchor="end">{unit}</text>
-        <path d={area} fill={`url(#${gradId})`} />
-        <path d={line} fill="none" stroke={color} strokeWidth="1.4" />
-        {RANGE_XLABELS[range].map((l, i, arr) => (
-          <text key={l} x={PAD_L + (i / (arr.length - 1)) * plotW} y={H - 8}
-                fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="9.5" textAnchor="middle">{l}</text>
-        ))}
-      </svg>
+      <div className="relative flex-1 min-h-[260px]">
+        <svg viewBox={`0 0 ${W} ${H}`} className="absolute inset-0 w-full h-full block" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={color} stopOpacity="0.35" />
+              <stop offset="100%" stopColor={color} stopOpacity="0" />
+            </linearGradient>
+          </defs>
+          {[0.25, 0.5, 0.75, 1].map(p => (
+            <line key={p} x1={PAD_L} x2={W - PAD_R} y1={PAD_T + plotH * (1 - p)} y2={PAD_T + plotH * (1 - p)}
+                  stroke="rgba(63,63,70,0.4)" strokeDasharray="2 4" vectorEffect="non-scaling-stroke" />
+          ))}
+          {hasAny && [0, 0.5, 1].map(p => (
+            <text key={p} x={PAD_L - 6} y={PAD_T + plotH * (1 - p) + 4}
+                  fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="11" textAnchor="end">
+              {unit === 'bytes' ? humanBytes(max * p) : (max * p).toFixed(0)}
+            </text>
+          ))}
+          {hasAny && <text x={PAD_L - 6} y={PAD_T - 6} fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="10" textAnchor="end">{unit}</text>}
+          {hasAny && (
+            <>
+              <path d={area} fill={`url(#${gradId})`} />
+              <path d={line} fill="none" stroke={color} strokeWidth="1.6" vectorEffect="non-scaling-stroke" />
+            </>
+          )}
+          {RANGE_XLABELS[range].map((l, i, arr) => (
+            <text key={l} x={PAD_L + (i / (arr.length - 1)) * plotW} y={H - 10}
+                  fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="11" textAnchor="middle">{l}</text>
+          ))}
+        </svg>
+        {!hasAny && (
+          <div className="absolute inset-0 flex items-center justify-center text-[12px] text-zinc-500 font-mono">no data yet</div>
+        )}
+      </div>
     </div>
   );
 }
