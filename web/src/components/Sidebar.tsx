@@ -12,6 +12,7 @@ const NAV = [
   { id: 'vpn',      to: '/vpn',      label: 'WireGuard',      icon: 'ShieldCheck',      section: 'Network', hint: 'wg0' },
   { id: 'fw',       to: '/firewall', label: 'Firewall',       icon: 'Flame',            section: 'Network', hint: 'iptables' },
   { id: 'users',    to: '/users',    label: 'Users',          icon: 'Users',            section: 'System' },
+  { id: 'services', to: '/services', label: 'Services',       icon: 'Boxes',            section: 'System', hint: 'systemd' },
   { id: 'settings', to: '/settings', label: 'Settings',       icon: 'Settings',         section: 'System' },
 ] as const;
 

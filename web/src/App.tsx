@@ -13,6 +13,7 @@ import { Logs } from './views/Logs';
 import { Wireguard } from './views/Wireguard';
 import { Firewall } from './views/Firewall';
 import { Users } from './views/Users';
+import { Services } from './views/Services';
 import { Settings } from './views/Settings';
 
 export default function App() {
@@ -47,6 +48,7 @@ export default function App() {
                 <Route path="/vpn" element={<Wireguard />} />
                 <Route path="/firewall" element={<Firewall />} />
                 <Route path="/users" element={<Users />} />
+                <Route path="/services" element={<Services />} />
                 <Route path="/settings/*" element={<Settings />} />
                 <Route path="*" element={<Navigate to="/overview" replace />} />
               </Routes>

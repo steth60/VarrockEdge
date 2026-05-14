@@ -11,6 +11,7 @@ const TITLES: Record<string, { label: string; section: string; hint?: string }> 
   '/vpn':      { section: 'Network', label: 'WireGuard',      hint: 'wg0' },
   '/firewall': { section: 'Network', label: 'Firewall',       hint: 'iptables' },
   '/users':    { section: 'System',  label: 'Users' },
+  '/services': { section: 'System',  label: 'Services',       hint: 'systemd' },
   '/settings': { section: 'System',  label: 'Settings' },
 };
 
