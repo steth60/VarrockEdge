@@ -1,0 +1,131 @@
+import { sqliteTable, text, integer, real } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
+
+export const users = sqliteTable('users', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  email: text('email').notNull().unique(),
+  name: text('name').notNull(),
+  passwordHash: text('password_hash').notNull(),
+  role: text('role').notNull().default('Admin'), // Owner, Admin, Network, Read-only
+  status: text('status').notNull().default('active'), // active, invited, suspended
+  mfaEnabled: integer('mfa_enabled', { mode: 'boolean' }).notNull().default(false),
+  lastSeenAt: integer('last_seen_at', { mode: 'timestamp' }),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const sessions = sqliteTable('sessions', {
+  id: text('id').primaryKey(),
+  userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(),
+  ip: text('ip'),
+  ua: text('ua'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const dhcpReservations = sqliteTable('dhcp_reservations', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  hostname: text('hostname').notNull(),
+  mac: text('mac').notNull().unique(),
+  ip: text('ip').notNull(),
+  lease: text('lease').notNull().default('24h'),
+  comment: text('comment'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const dhcpScope = sqliteTable('dhcp_scope', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  rangeStart: text('range_start').notNull().default('10.0.0.50'),
+  rangeEnd: text('range_end').notNull().default('10.0.0.200'),
+  leaseTime: text('lease_time').notNull().default('24h'),
+  gateway: text('gateway').notNull().default('10.0.0.1'),
+  dnsServers: text('dns_servers').notNull().default('10.0.0.1,1.1.1.1'),
+  domain: text('domain').notNull().default('varrok.local'),
+});
+
+export const dnsRecords = sqliteTable('dns_records', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  host: text('host').notNull().unique(),
+  type: text('type').notNull().default('A'), // A, AAAA, CNAME, TXT
+  target: text('target').notNull(),
+  ttl: integer('ttl').notNull().default(300),
+});
+
+export const dnsUpstreams = sqliteTable('dns_upstreams', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  ip: text('ip').notNull(),
+  provider: text('provider'),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+});
+
+export const wgServer = sqliteTable('wg_server', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  privateKey: text('private_key').notNull(),
+  publicKey: text('public_key').notNull(),
+  listenPort: integer('listen_port').notNull().default(51820),
+  tunnelCidr: text('tunnel_cidr').notNull().default('10.10.0.0/24'),
+  mtu: integer('mtu').notNull().default(1420),
+  publicEndpoint: text('public_endpoint'),
+  dnsPush: text('dns_push').notNull().default('10.0.0.1,1.1.1.1'),
+  defaultAllowedIps: text('default_allowed_ips').notNull().default('10.0.0.0/24'),
+});
+
+export const wgPeers = sqliteTable('wg_peers', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  name: text('name').notNull(),
+  publicKey: text('public_key').notNull(),
+  privateKey: text('private_key'), // only retained if we generated it (so user can re-download)
+  presharedKey: text('preshared_key'),
+  allowedIps: text('allowed_ips').notNull(),
+  keepalive: integer('keepalive').notNull().default(25),
+  kind: text('kind').notNull().default('road-warrior'), // road-warrior | site
+  remoteSubnet: text('remote_subnet'),
+  remoteEndpoint: text('remote_endpoint'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const fwDnat = sqliteTable('fw_dnat', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  srcPort: integer('src_port').notNull(),
+  proto: text('proto').notNull().default('tcp'), // tcp|udp|both
+  destIp: text('dest_ip').notNull(),
+  destPort: integer('dest_port').notNull(),
+  comment: text('comment'),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const fwSnat = sqliteTable('fw_snat', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  source: text('source').notNull(),
+  outIface: text('out_iface').notNull().default('eth0'),
+  mode: text('mode').notNull().default('MASQUERADE'), // MASQUERADE|SNAT
+  toSource: text('to_source'),
+  comment: text('comment'),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  isCore: integer('is_core', { mode: 'boolean' }).notNull().default(false), // protected MASQUERADE rule
+});
+
+export const fwRules = sqliteTable('fw_rules', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  chain: text('chain').notNull(), // INPUT|FORWARD|OUTPUT
+  action: text('action').notNull(), // ACCEPT|DROP|REJECT
+  proto: text('proto').notNull().default('all'),
+  source: text('source'),
+  dport: text('dport'),
+  comment: text('comment'),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+});
+
+export const settings = sqliteTable('settings', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export type User = typeof users.$inferSelect;
+export type DhcpReservation = typeof dhcpReservations.$inferSelect;
+export type DnsRecord = typeof dnsRecords.$inferSelect;
+export type WgPeer = typeof wgPeers.$inferSelect;
+export type FwDnat = typeof fwDnat.$inferSelect;
+export type FwSnat = typeof fwSnat.$inferSelect;
+export type FwRule = typeof fwRules.$inferSelect;

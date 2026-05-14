@@ -1,0 +1,13 @@
+node_modules
+*.log
+.env
+.env.local
+dist/
+server/dist/
+server/public/
+var/
+*.db
+*.db-journal
+*.tsbuildinfo
+.DS_Store
+.vscode/
