@@ -18,6 +18,7 @@ import fwRoutes from './routes/firewall';
 import userRoutes from './routes/users';
 import settingsRoutes from './routes/settings';
 import logsRoutes from './routes/logs';
+import topologyRoutes from './routes/topology';
 import { ensureServerAsync } from './system/wireguard';
 
 function refuseUnsafeBind(host: string) {
@@ -64,6 +65,7 @@ async function main() {
   app.use('/api/users',    requireAuth, userRoutes);
   app.use('/api/settings', requireAuth, settingsRoutes);
   app.use('/api/logs',     requireAuth, logsRoutes);
+  app.use('/api/topology', requireAuth, topologyRoutes);
 
   // Static SPA
   if (fs.existsSync(config.publicDir)) {
