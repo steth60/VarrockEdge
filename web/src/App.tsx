@@ -1,9 +1,11 @@
+import { useEffect, useState } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './hooks/useAuth';
 import { useTweaks } from './hooks/useTweaks';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
 import { TweaksPanel } from './components/TweaksPanel';
+import { CommandPalette } from './components/CommandPalette';
 import { Login } from './views/Login';
 import { Overview } from './views/Overview';
 import { Dhcp } from './views/Dhcp';
@@ -20,6 +22,18 @@ import { SystemData } from './views/SystemData';
 export default function App() {
   const auth = useAuth();
   const { tweaks, setTweak } = useTweaks();
+  const [paletteOpen, setPaletteOpen] = useState(false);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setPaletteOpen(o => !o);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   if (auth.loading) {
     return (
@@ -36,7 +50,7 @@ export default function App() {
       <div className="flex flex-1 min-h-0">
         <Sidebar tweaks={tweaks} user={auth.user} onLogout={auth.logout} />
         <main className="flex-1 min-w-0 flex flex-col">
-          <Header />
+          <Header onOpenPalette={() => setPaletteOpen(true)} />
           <div className="flex-1 overflow-auto">
             <div className="px-6 py-5">
               <Routes>
@@ -59,6 +73,7 @@ export default function App() {
         </main>
       </div>
       <TweaksPanel tweaks={tweaks} setTweak={setTweak} />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
     </div>
   );
 }

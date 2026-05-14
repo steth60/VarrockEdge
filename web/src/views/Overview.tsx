@@ -7,6 +7,8 @@ interface Snapshot {
   cpu: number;
   ram: number;
   ramTotal: number;
+  disk: { used: number; total: number };
+  tempC: number | null;
   eth0: { rxMbps: number; txMbps: number };
   eth1: { rxMbps: number; txMbps: number };
   ts: number;
@@ -15,8 +17,9 @@ interface Snapshot {
 interface SystemInfo { hostname: string; kernel: string; uptime: number; version: string; loadAvg: number[]; container: string; }
 interface Interfaces { wan: { name: string; ip: string; role: string; rxMbps: number; txMbps: number }; lan: { name: string; ip: string; role: string; rxMbps: number; txMbps: number } }
 interface Threat { id: number; severity: string; status: string }
-interface WgPeer { id: number; status: string; kind: string }
+interface WgPeer { id: number; name: string; status: string; kind: string }
 interface Bucket { hour: number; critical: number; high: number; medium: number; low: number }
+interface Lease { hostname: string; ip: string; mac: string }
 
 export function Overview() {
   const live = useSSE<Snapshot>('/api/metrics/stream');
@@ -28,6 +31,7 @@ export function Overview() {
   const [threats, setThreats] = useState<Threat[]>([]);
   const [peers, setPeers] = useState<WgPeer[]>([]);
   const [buckets, setBuckets] = useState<Bucket[]>([]);
+  const [leasesCount, setLeasesCount] = useState(0);
 
   useEffect(() => {
     api.get<SystemInfo>('/api/overview/system').then(setSysinfo).catch(() => {});
@@ -35,12 +39,13 @@ export function Overview() {
     api.get<{ threats: Threat[] }>('/api/security/threats').then(r => setThreats(r.threats)).catch(() => {});
     api.get<{ peers: WgPeer[] }>('/api/wireguard/peers').then(r => setPeers(r.peers)).catch(() => {});
     api.get<{ buckets: Bucket[] }>('/api/security/timeline').then(r => setBuckets(r.buckets)).catch(() => {});
+    api.get<{ leases: Lease[] }>('/api/dhcp/leases').then(r => setLeasesCount(r.leases.length)).catch(() => {});
   }, []);
 
   return (
     <div className="grid grid-cols-12 gap-5">
       <aside className="col-span-12 xl:col-span-3 space-y-4">
-        <ApplianceCard sysinfo={sysinfo} peers={peers} threats={threats} />
+        <ApplianceCard sysinfo={sysinfo} peers={peers} threats={threats} leasesCount={leasesCount} />
         <WanCard interfaces={interfaces} live={live} />
         <LatencyPills />
         <SpeedTestCard />
@@ -98,36 +103,38 @@ export function Overview() {
         <Card padding="p-0" className="overflow-hidden">
           <ThroughputChart series={series} live={live} />
           <div className="px-5 pb-4">
-            <AvailabilityStrip label={interfaces?.wan.name ? `${interfaces.wan.name} · WAN` : 'eth0 · WAN'}
-                               colorMap={WAN_COLORS} buckets={WAN_BUCKETS} icon="Globe"
-                               sub={interfaces?.wan.ip ?? '—'} />
-            <AvailabilityStrip label={`wg0 · ${peers.filter(p => p.kind === 'site').length} sites`}
-                               colorMap={WG_COLORS} buckets={WG_BUCKETS} icon="ShieldCheck"
-                               sub={`${peers.filter(p => p.status === 'connected').length} / ${peers.length} peers up`} />
+            <AvailabilityStripLive
+              label={interfaces?.wan.name ? `${interfaces.wan.name} · WAN` : 'eth0 · WAN'}
+              target="wan" colorMap={WAN_COLORS} icon="Globe"
+              sub={interfaces?.wan.ip ?? '—'} />
+            {peers.slice(0, 2).map(p => (
+              <AvailabilityStripLive key={p.id}
+                label={p.kind === 'site' ? `wg0 site · ${p.name ?? p.id}` : `wg0 peer · ${p.name ?? p.id}`}
+                target={`wg:${p.id}`} colorMap={WG_COLORS} icon="ShieldCheck"
+                sub={`status: ${p.status}`} />
+            ))}
           </div>
         </Card>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <TopStrip title="Top LAN clients" entries={TOP_CLIENTS} />
-          <TopStrip title="Top services"    entries={TOP_SERVICES} />
-          <TopStrip title="Top destinations" entries={TOP_DESTINATIONS} />
+          <TopStripLive title="Top LAN clients"   kind="clients" />
+          <TopStripLive title="Top services"      kind="services" />
+          <TopStripLive title="Top destinations"  kind="destinations" />
         </div>
 
-        <Card title="Service health" subtitle="Success rate · last 60 minutes"
-              action={<Badge variant="success" size="sm" icon="CheckCircle2">nominal</Badge>}>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <HealthBar label="DHCP" success={100} count="0 issues" />
-            <HealthBar label="DNS" success={99.7} count="14,228 queries" />
-            <HealthBar label="NAT translate" success={100} count="—" />
-            <HealthBar label="WG handshake" success={peers.length ? (peers.filter(p => p.status === 'connected').length / peers.length * 100) : 100} count={`${peers.length} peers`} />
-            <HealthBar label="TLS termination" success={99.9} count="—" />
-            <HealthBar label="DoH/DoT" success={100} count="—" />
-            <HealthBar label="DDoS scrubbing" success={94.1} count={`${threats.filter(t => t.severity === 'critical').length} critical`} tone={threats.filter(t => t.severity === 'critical').length > 0 ? 'warn' : undefined} />
-            <HealthBar label="Auth (web UI)" success={97.2} count="—" tone="warn" />
+        <ServiceHealthCard peers={peers} threats={threats} />
+
+        <Card padding="p-0" className="overflow-hidden">
+          <div className="px-5 pt-4 pb-3 flex items-start justify-between">
+            <div>
+              <h3 className="font-display text-[13.5px] font-semibold tracking-tight text-zinc-100">WAN latency (last 60 min)</h3>
+              <p className="text-[11.5px] text-zinc-500 mt-0.5">Real ICMP probe to 1.1.1.1 every 30s</p>
+            </div>
           </div>
+          <LatencyHistoryChart />
         </Card>
 
-        <Card title="Connection quality" subtitle="Latency vs. packet loss per active peer & WAN"
+        <Card title="Connection quality" subtitle="Real ICMP probes to 1.1.1.1, 8.8.8.8, 9.9.9.9, github.com"
               action={
                 <div className="flex items-center gap-2 text-[11px] text-zinc-500">
                   <LegendDot color="#34d399" label="Excellent" />
@@ -135,12 +142,12 @@ export function Overview() {
                   <LegendDot color="#fb7185" label="Poor" />
                 </div>
               }>
-          <QualityScatter />
+          <QualityScatterLive />
         </Card>
 
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-          <Card title="Application breakdown" subtitle="By volume — last hour" className="lg:col-span-3" padding="p-5">
-            <ApplicationBreakdown />
+          <Card title="Application breakdown" subtitle="From conntrack · last hour" className="lg:col-span-3" padding="p-5">
+            <ApplicationBreakdownLive />
           </Card>
           <Card title="Connection mix" subtitle="Active flows" className="lg:col-span-2" padding="p-5">
             <ConnectionMix peers={peers} />
@@ -152,7 +159,7 @@ export function Overview() {
 }
 
 // ─── Left rail cards ─────────────────────────────────────────────
-function ApplianceCard({ sysinfo, peers, threats }: { sysinfo: SystemInfo | null; peers: WgPeer[]; threats: Threat[] }) {
+function ApplianceCard({ sysinfo, peers, threats, leasesCount }: { sysinfo: SystemInfo | null; peers: WgPeer[]; threats: Threat[]; leasesCount: number }) {
   return (
     <Card padding="p-4">
       <div className="flex items-start gap-3">
@@ -172,7 +179,7 @@ function ApplianceCard({ sysinfo, peers, threats }: { sysinfo: SystemInfo | null
       <div className="mt-3 grid grid-cols-4 gap-1.5">
         <MiniCount icon="ShieldCheck" value={String(peers.filter(p => p.kind === 'site').length)} label="sites" />
         <MiniCount icon="UserPlus"    value={String(peers.length)} label="peers" />
-        <MiniCount icon="Plug"        value="0" label="leases" />
+        <MiniCount icon="Plug"        value={String(leasesCount)} label="leases" />
         <MiniCount icon="ShieldAlert" value={String(threats.filter(t => t.status !== 'acked').length)} label="alerts" tone={threats.filter(t => t.status !== 'acked').length > 0 ? 'warn' : undefined} />
       </div>
     </Card>
@@ -253,48 +260,72 @@ function RailRow({ k, v, mono, color }: { k: string; v: string; mono?: boolean; 
   );
 }
 
+interface PingTarget { host: string; label: string; avgMs: number | null; lossPct: number; ok: boolean }
+
 function LatencyPills() {
-  const targets = [
-    { label: 'Cloudflare',  ms: 3,  icon: 'Cloud' },
-    { label: 'Google',      ms: 11, icon: 'Search' },
-    { label: 'Quad9',       ms: 17, icon: 'Globe' },
-    { label: 'AWS eu-west', ms: 14, icon: 'Server' },
-  ];
+  const [targets, setTargets] = useState<PingTarget[]>([]);
+  useEffect(() => {
+    const load = () => api.get<{ targets: PingTarget[] }>('/api/probes/latency').then(r => setTargets(r.targets)).catch(() => {});
+    load();
+    const t = setInterval(load, 30_000);
+    return () => clearInterval(t);
+  }, []);
   return (
     <Card padding="p-3">
       <div className="grid grid-cols-2 gap-1.5">
-        {targets.map(t => (
-          <div key={t.label} className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-zinc-900/40 border border-zinc-800/60">
-            <span className={`w-1.5 h-1.5 rounded-full ${t.ms < 25 ? 'bg-emerald-400' : t.ms < 60 ? 'bg-amber-400' : 'bg-rose-400'}`} />
-            <span className="text-[11px] text-zinc-300 flex-1 truncate">{t.label}</span>
-            <span className="font-mono text-[11px] text-zinc-100">{t.ms}ms</span>
+        {targets.length === 0 && Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-zinc-900/40 border border-zinc-800/60">
+            <span className="w-1.5 h-1.5 rounded-full bg-zinc-700" />
+            <span className="text-[11px] text-zinc-600 flex-1">probing…</span>
           </div>
         ))}
+        {targets.map(t => {
+          const ms = t.avgMs ?? 0;
+          const dot = !t.ok ? 'bg-rose-400' : ms < 25 ? 'bg-emerald-400' : ms < 60 ? 'bg-amber-400' : 'bg-rose-400';
+          return (
+            <div key={t.host} className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-zinc-900/40 border border-zinc-800/60" title={t.host}>
+              <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
+              <span className="text-[11px] text-zinc-300 flex-1 truncate">{t.label}</span>
+              <span className="font-mono text-[11px] text-zinc-100">{t.ok ? `${ms.toFixed(0)}ms` : '—'}</span>
+            </div>
+          );
+        })}
       </div>
     </Card>
   );
 }
 
+interface SpeedResult { downloadMbps: number; uploadMbps: number; pingMs: number; isp: string | null; source: string }
+
 function SpeedTestCard() {
   const [running, setRunning] = useState(false);
-  const [result, setResult] = useState({ down: 384.2, up: 92.6, ping: 14 });
-  const runTest = () => {
+  const [result, setResult] = useState<SpeedResult | null>(null);
+  const runTest = async () => {
     setRunning(true);
-    setTimeout(() => {
-      setResult({ down: 200 + Math.random() * 400, up: 50 + Math.random() * 100, ping: 8 + Math.random() * 12 });
+    try {
+      const r = await api.post<SpeedResult>('/api/probes/speedtest');
+      setResult(r);
+    } catch (err: any) {
+      alert(err?.message ?? 'speed test failed');
+    } finally {
       setRunning(false);
-    }, 2400);
+    }
   };
+  const down = result?.downloadMbps ?? 0;
+  const up   = result?.uploadMbps ?? 0;
+  const png  = result?.pingMs ?? 0;
   return (
     <Card padding="p-4">
       <div className="grid grid-cols-3 gap-2 text-center">
-        <div><div className="text-[10px] uppercase tracking-wider text-zinc-500">Down</div><div className="font-mono text-[14px] text-emerald-300 mt-1">{running ? '…' : result.down.toFixed(1)}</div><div className="text-[10px] text-zinc-500">Mbps</div></div>
-        <div><div className="text-[10px] uppercase tracking-wider text-zinc-500">Up</div><div className="font-mono text-[14px] text-cyan-300 mt-1">{running ? '…' : result.up.toFixed(1)}</div><div className="text-[10px] text-zinc-500">Mbps</div></div>
-        <div><div className="text-[10px] uppercase tracking-wider text-zinc-500">Ping</div><div className="font-mono text-[14px] text-zinc-100 mt-1">{running ? '…' : result.ping.toFixed(0)}</div><div className="text-[10px] text-zinc-500">ms</div></div>
+        <div><div className="text-[10px] uppercase tracking-wider text-zinc-500">Down</div><div className="font-mono text-[14px] text-emerald-300 mt-1">{running ? '…' : result ? down.toFixed(1) : '—'}</div><div className="text-[10px] text-zinc-500">Mbps</div></div>
+        <div><div className="text-[10px] uppercase tracking-wider text-zinc-500">Up</div><div className="font-mono text-[14px] text-cyan-300 mt-1">{running ? '…' : result ? up.toFixed(1) : '—'}</div><div className="text-[10px] text-zinc-500">Mbps</div></div>
+        <div><div className="text-[10px] uppercase tracking-wider text-zinc-500">Ping</div><div className="font-mono text-[14px] text-zinc-100 mt-1">{running ? '…' : result ? png.toFixed(0) : '—'}</div><div className="text-[10px] text-zinc-500">ms</div></div>
       </div>
-      <Button variant={running ? 'secondary' : 'primary'} size="md" icon={running ? 'Loader2' : 'Gauge'} className="w-full mt-3" onClick={runTest}>
+      <Button variant={running ? 'secondary' : 'primary'} size="md" icon={running ? 'Loader2' : 'Gauge'} className={`w-full mt-3 ${running ? '[&_svg]:animate-spin' : ''}`} onClick={runTest} disabled={running}>
         {running ? 'Testing…' : 'ISP speed test'}
       </Button>
+      {result?.source === 'synthetic' && <p className="text-[10px] text-amber-300/80 mt-2 text-center">dev mode — synthetic result</p>}
+      {result?.isp && result.source === 'ookla' && <p className="text-[10px] text-zinc-500 mt-2 text-center font-mono">{result.isp}</p>}
     </Card>
   );
 }
@@ -329,14 +360,30 @@ function PriorityCard() {
 }
 
 function SystemMiniCard({ live }: { live: Snapshot | null }) {
+  const diskUsed  = live?.disk.used ?? 0;
+  const diskTotal = live?.disk.total ?? 0;
+  const diskPct   = diskTotal > 0 ? (diskUsed / diskTotal) * 100 : 0;
   return (
     <Card padding="p-4">
       <div className="text-[11.5px] font-medium text-zinc-200 mb-3">System</div>
       <div className="space-y-3">
-        <SystemBar label="CPU" value={live?.cpu ?? 0}            max={100} unit="%" color="#22d3ee" detail="load avg" />
-        <SystemBar label="RAM" value={live?.ram ?? 0}            max={live?.ramTotal ?? 1024} unit=" MB" color="#a78bfa" detail={live ? `${Math.round((live.ram / (live.ramTotal || 1)) * 100)}% used` : '—'} />
-        <SystemBar label="Disk" value={42}                       max={100} unit="%" color="#34d399" detail="—" />
-        <SystemBar label="Temp" value={47}                       max={80}  unit="°C" color="#fbbf24" detail="nominal" />
+        <SystemBar label="CPU" value={live?.cpu ?? 0} max={100} unit="%" color="#22d3ee" detail="load avg" />
+        <SystemBar label="RAM" value={live?.ram ?? 0} max={live?.ramTotal ?? 1024} unit=" MB" color="#a78bfa" detail={live ? `${Math.round((live.ram / (live.ramTotal || 1)) * 100)}% used` : '—'} />
+        <SystemBar label="Disk" value={diskPct} max={100} unit="%" color="#34d399" detail={diskTotal > 0 ? `${(diskUsed/1024).toFixed(1)} / ${(diskTotal/1024).toFixed(1)} GB` : '—'} />
+        {live?.tempC !== null && live?.tempC !== undefined ? (
+          <SystemBar label="Temp" value={live.tempC} max={80} unit="°C" color={live.tempC > 70 ? '#fb7185' : '#fbbf24'} detail={live.tempC > 70 ? 'hot' : 'nominal'} />
+        ) : (
+          <div>
+            <div className="flex items-baseline justify-between mb-1">
+              <span className="text-[10.5px] uppercase tracking-wider text-zinc-500">Temp</span>
+              <span className="font-mono text-[11.5px] text-zinc-600">—</span>
+            </div>
+            <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden">
+              <div className="h-full" style={{ width: '0%' }} />
+            </div>
+            <div className="text-[10px] text-zinc-600 mt-0.5">no thermal_zone0</div>
+          </div>
+        )}
       </div>
     </Card>
   );
@@ -439,29 +486,31 @@ function ThroughputChart({ series, live }: { series: { activity: boolean; latenc
 
 // ─── Availability strips ─────────────────────────────────────────
 const WAN_COLORS: Record<string, string> = { up: '#34d399', degraded: '#fbbf24', down: '#fb7185', unknown: 'rgba(63,63,70,0.4)' };
-const WG_COLORS: Record<string, string>  = { up: '#22d3ee', degraded: '#fbbf24', down: '#fb7185', unknown: 'rgba(63,63,70,0.4)' };
+const WG_COLORS:  Record<string, string> = { up: '#22d3ee', degraded: '#fbbf24', down: '#fb7185', unknown: 'rgba(63,63,70,0.4)' };
 
-function buildAvail(n: number, downAt: { from: number; to: number; status: string }[]): string[] {
-  return Array.from({ length: n }, (_, i) => {
-    const d = downAt.find(x => x.from <= i && i <= x.to);
-    return d ? d.status : 'up';
-  });
-}
-const WAN_BUCKETS = buildAvail(96, [{ from: 30, to: 31, status: 'degraded' }, { from: 76, to: 77, status: 'degraded' }]);
-const WG_BUCKETS  = buildAvail(96, [{ from: 22, to: 24, status: 'degraded' }, { from: 65, to: 66, status: 'down' }]);
-
-function AvailabilityStrip({ label, sub, icon, colorMap, buckets }: { label: string; sub: string; icon: string; colorMap: Record<string, string>; buckets: string[] }) {
+function AvailabilityStripLive({ label, sub, icon, colorMap, target }: { label: string; sub: string; icon: string; colorMap: Record<string, string>; target: string }) {
+  const [buckets, setBuckets] = useState<Array<{ bucket: number; status: string }>>([]);
+  useEffect(() => {
+    const load = () => api.get<{ buckets: typeof buckets }>(`/api/metrics/availability?target=${encodeURIComponent(target)}`).then(r => setBuckets(r.buckets)).catch(() => {});
+    load();
+    const t = setInterval(load, 60_000);
+    return () => clearInterval(t);
+  }, [target]);
   return (
     <div className="flex items-center gap-3 mt-3">
       <Icon name={icon} size={14} className="text-zinc-400 shrink-0" />
-      <div className="w-32 shrink-0">
+      <div className="w-44 shrink-0">
         <div className="text-[11.5px] text-zinc-200 truncate">{label}</div>
         <div className="text-[10px] text-zinc-500 font-mono truncate">{sub}</div>
       </div>
       <div className="flex-1 h-3 flex gap-[1px]">
-        {buckets.map((s, i) => (
-          <div key={i} className="flex-1 rounded-[1px]" style={{ background: colorMap[s] }} title={`${Math.floor(i / 4)}:${(i % 4) * 15 || '00'} · ${s}`} />
-        ))}
+        {buckets.length === 0
+          ? Array.from({ length: 96 }).map((_, i) => <div key={i} className="flex-1 rounded-[1px] bg-zinc-800/40" />)
+          : buckets.map((b, i) => (
+              <div key={b.bucket} className="flex-1 rounded-[1px]"
+                style={{ background: colorMap[b.status] ?? colorMap.unknown }}
+                title={`${new Date(b.bucket * 15 * 60_000).toLocaleTimeString()} · ${b.status}`} />
+            ))}
       </div>
       <Icon name="ChevronRight" size={12} className="text-zinc-600 shrink-0" />
     </div>
@@ -494,6 +543,55 @@ const TOP_DESTINATIONS = [
   { name: 'NL',  sub: 'docker',      glyph: 'Boxes',  tone: '#a78bfa', traffic: '920 MB' },
 ];
 
+interface FlowItem { key: string; label: string; hint: string; bytes: number; packets: number }
+
+function humanBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  const u = ['KB', 'MB', 'GB', 'TB'];
+  let v = n / 1024, i = 0;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return `${v.toFixed(v < 10 ? 1 : 0)} ${u[i]}`;
+}
+
+const KIND_GLYPH: Record<string, { glyph: string; tone: string }> = {
+  clients:      { glyph: 'MonitorSmartphone', tone: '#22d3ee' },
+  services:     { glyph: 'Server',             tone: '#34d399' },
+  destinations: { glyph: 'Globe',              tone: '#a78bfa' },
+};
+
+function TopStripLive({ title, kind }: { title: string; kind: 'clients' | 'services' | 'destinations' }) {
+  const [items, setItems] = useState<FlowItem[]>([]);
+  useEffect(() => {
+    const load = () => api.get<{ items: FlowItem[] }>(`/api/flows/top?kind=${kind}&window=1h`).then(r => setItems(r.items)).catch(() => {});
+    load();
+    const t = setInterval(load, 30_000);
+    return () => clearInterval(t);
+  }, [kind]);
+  const meta = KIND_GLYPH[kind]!;
+  return (
+    <Card title={title} subtitle="Last hour · from conntrack" padding="p-0">
+      <div className="px-2 pb-3 pt-1">
+        {items.length === 0 ? (
+          <div className="text-[11px] text-zinc-500 text-center py-6">no flow data yet</div>
+        ) : (
+          <div className="grid grid-cols-3 gap-1">
+            {items.slice(0, 6).map(e => (
+              <button key={e.key} className="group flex flex-col items-center gap-1 rounded-md hover:bg-zinc-900/50 p-2 transition-colors" title={e.hint}>
+                <div className="w-9 h-9 rounded-lg border border-zinc-800/70 flex items-center justify-center"
+                     style={{ background: `linear-gradient(135deg, ${meta.tone}22, ${meta.tone}08)` }}>
+                  <Icon name={meta.glyph} size={14} color={meta.tone} />
+                </div>
+                <div className="text-[10.5px] font-medium text-zinc-200 truncate max-w-[80px]">{e.label}</div>
+                <div className="text-[9.5px] text-zinc-500 font-mono truncate max-w-[80px]">{humanBytes(e.bytes)}</div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
 function TopStrip({ title, entries }: { title: string; entries: typeof TOP_CLIENTS }) {
   return (
     <Card title={title} subtitle="Last hour · by volume" padding="p-0"
@@ -513,6 +611,89 @@ function TopStrip({ title, entries }: { title: string; entries: typeof TOP_CLIEN
         </div>
       </div>
     </Card>
+  );
+}
+
+function ServiceHealthCard({ peers, threats }: { peers: WgPeer[]; threats: Threat[] }) {
+  const wgConnected = peers.length === 0 ? 100 : (peers.filter(p => p.status === 'connected').length / peers.length) * 100;
+  const critOpen    = threats.filter(t => t.severity === 'critical' && t.status !== 'acked').length;
+  return (
+    <Card title="Service health" subtitle="Live signals from real subsystems"
+          action={<Badge variant={critOpen === 0 ? 'success' : 'warn'} size="sm" icon={critOpen === 0 ? 'CheckCircle2' : 'AlertTriangle'}>{critOpen === 0 ? 'nominal' : `${critOpen} critical`}</Badge>}>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <HealthBar label="WG handshake"   success={wgConnected} count={peers.length === 0 ? 'no peers' : `${peers.filter(p => p.status === 'connected').length}/${peers.length} up`} />
+        <HealthBar label="Critical threats" success={Math.max(0, 100 - critOpen * 10)} count={`${critOpen} open`} tone={critOpen > 0 ? 'danger' : undefined} />
+        <HealthBarUnknown label="DHCP ACK rate" detail="needs dnsmasq journal scrape" />
+        <HealthBarUnknown label="DNS SERVFAIL" detail="needs dnsmasq --log-queries" />
+        <HealthBarUnknown label="NAT translate" detail="needs conntrack -S sampling" />
+        <HealthBarUnknown label="TLS handshake" detail="no upstream proxy detected" />
+        <HealthBarUnknown label="DoH/DoT" detail="not wired" />
+        <HealthBarUnknown label="Auth (web UI)" detail="needs auth.login.fail/success" />
+      </div>
+    </Card>
+  );
+}
+
+function HealthBarUnknown({ label, detail }: { label: string; detail: string }) {
+  return (
+    <div>
+      <div className="flex items-baseline justify-between">
+        <span className="text-[11.5px] text-zinc-300 font-medium">{label}</span>
+        <span className="font-mono text-[11px] text-zinc-600">—</span>
+      </div>
+      <div className="flex gap-[2px] mt-1.5">
+        {Array.from({ length: 24 }).map((_, i) => (
+          <span key={i} className="flex-1 h-3.5 rounded-[1px] bg-zinc-800/40" />
+        ))}
+      </div>
+      <div className="text-[10.5px] text-zinc-600 mt-1.5">{detail}</div>
+    </div>
+  );
+}
+
+function LatencyHistoryChart() {
+  const [buckets, setBuckets] = useState<Array<{ minute: number; avgMs: number | null; lossPct: number | null }>>([]);
+  useEffect(() => {
+    const load = () => api.get<{ buckets: typeof buckets }>('/api/metrics/history').then(r => setBuckets(r.buckets)).catch(() => {});
+    load();
+    const t = setInterval(load, 30_000);
+    return () => clearInterval(t);
+  }, []);
+  const W = 1000, H = 140, PAD_L = 32, PAD_R = 16, PAD_T = 10, PAD_B = 18;
+  const plotW = W - PAD_L - PAD_R, plotH = H - PAD_T - PAD_B;
+  const vals = buckets.map(b => b.avgMs ?? 0);
+  const maxLat = Math.max(50, ...vals) * 1.2;
+  const x = (i: number) => PAD_L + (i / Math.max(1, buckets.length - 1)) * plotW;
+  const y = (v: number) => PAD_T + plotH - (v / maxLat) * plotH;
+  const line = buckets.map((b, i) => b.avgMs !== null ? `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(b.avgMs).toFixed(1)}` : '').filter(Boolean).join('');
+  return (
+    <div className="px-5 pb-4">
+      {buckets.every(b => b.avgMs === null) ? (
+        <div className="text-[12px] text-zinc-500 text-center py-6">collecting samples (one every 30s)…</div>
+      ) : (
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full block" style={{ height: H }}>
+          {[0, 0.5, 1].map(p => (
+            <line key={p} x1={PAD_L} x2={W - PAD_R} y1={PAD_T + plotH * (1 - p)} y2={PAD_T + plotH * (1 - p)} stroke="rgba(63,63,70,0.4)" strokeDasharray="2 4" />
+          ))}
+          {[0, 0.5, 1].map(p => (
+            <text key={p} x={PAD_L - 6} y={PAD_T + plotH * (1 - p) + 3}
+                  fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="9.5" textAnchor="end">
+              {(maxLat * p).toFixed(0)}
+            </text>
+          ))}
+          <text x={PAD_L - 6} y={PAD_T - 2} fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="9" textAnchor="end">ms</text>
+          {/* Loss bars */}
+          {buckets.map((b, i) => b.lossPct && b.lossPct > 0 ? (
+            <rect key={i} x={x(i) - 2} y={PAD_T + plotH - (Math.min(b.lossPct, 100) / 100) * plotH} width="4" height={(Math.min(b.lossPct, 100) / 100) * plotH} fill="#fb7185" opacity="0.5" />
+          ) : null)}
+          <path d={line} fill="none" stroke="#22d3ee" strokeWidth="1.5" />
+          {['60m', '45m', '30m', '15m', 'now'].map((l, i, arr) => (
+            <text key={l} x={PAD_L + (i / (arr.length - 1)) * plotW} y={H - 4}
+                  fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="9.5" textAnchor="middle">{l}</text>
+          ))}
+        </svg>
+      )}
+    </div>
   );
 }
 
@@ -537,15 +718,34 @@ function HealthBar({ label, success, count, tone }: { label: string; success: nu
   );
 }
 
-function QualityScatter() {
-  const points = [
-    { id: 'eth0',         lat: 14, loss: 0.0, color: '#34d399', size: 9 },
-    { id: 'site-londonB', lat: 4,  loss: 0.0, color: '#22d3ee', size: 8 },
-    { id: 'site-paris',   lat: 11, loss: 0.0, color: '#22d3ee', size: 8 },
-    { id: 'callum',       lat: 22, loss: 0.0, color: '#34d399', size: 6 },
-    { id: 'ops-iphone',   lat: 41, loss: 0.1, color: '#34d399', size: 6 },
-    { id: 'support-rdp',  lat: 88, loss: 1.8, color: '#fb7185', size: 6 },
-  ];
+function QualityScatterLive() {
+  const [targets, setTargets] = useState<Array<{ host: string; label: string; avgMs: number | null; lossPct: number; ok: boolean }>>([]);
+  const [peers, setPeers] = useState<Array<{ id: number; name: string; status: string; handshake: string; kind: string }>>([]);
+  useEffect(() => {
+    const load = () => {
+      api.get<{ targets: typeof targets }>('/api/probes/latency').then(r => setTargets(r.targets)).catch(() => {});
+      api.get<{ peers: typeof peers }>('/api/wireguard/peers').then(r => setPeers(r.peers)).catch(() => {});
+    };
+    load();
+    const t = setInterval(load, 30_000);
+    return () => clearInterval(t);
+  }, []);
+  const points: Array<{ id: string; lat: number; loss: number; color: string; size: number }> = [];
+  for (const t of targets) {
+    if (!t.ok) continue;
+    const lat = t.avgMs ?? 0;
+    const color = lat < 30 && t.lossPct < 1 ? '#34d399' : lat < 80 && t.lossPct < 2 ? '#fbbf24' : '#fb7185';
+    points.push({ id: t.label, lat, loss: t.lossPct, color, size: 8 });
+  }
+  // WG peers — color by status (no per-peer latency yet, place at 0 loss / placeholder lat)
+  for (const p of peers) {
+    if (p.status === 'offline') continue;
+    points.push({ id: p.name, lat: p.status === 'connected' ? 25 : 70, loss: 0, color: p.status === 'connected' ? '#22d3ee' : '#fbbf24', size: 6 });
+  }
+  return <QualityScatterRaw points={points} />;
+}
+
+function QualityScatterRaw({ points }: { points: Array<{ id: string; lat: number; loss: number; color: string; size: number }> }) {
   const W = 1000, H = 200, PAD = 36;
   const maxLat = 150, maxLoss = 5;
   const x = (lat: number) => PAD + (lat / maxLat) * (W - PAD * 2);
@@ -587,6 +787,70 @@ const APP_DATA = [
   { name: 'Google',  down: 2.81, up: 0.11, color: '#60a5fa' },
   { name: 'Apple',   down: 1.04, up: 0.32, color: '#94a3b8' },
 ];
+
+interface AppRow { name: string; down: number; up: number }
+
+const APP_COLORS = ['#22d3ee', '#a78bfa', '#34d399', '#fbbf24', '#fb7185', '#60a5fa', '#94a3b8', '#38bdf8'];
+
+function ApplicationBreakdownLive() {
+  const [rows, setRows] = useState<AppRow[]>([]);
+  useEffect(() => {
+    const load = () => api.get<{ apps: AppRow[] }>('/api/flows/apps?window=1h').then(r => setRows(r.apps)).catch(() => {});
+    load();
+    const t = setInterval(load, 30_000);
+    return () => clearInterval(t);
+  }, []);
+  const data = rows.map((r, i) => ({ ...r, color: APP_COLORS[i % APP_COLORS.length]! }));
+  if (data.length === 0) {
+    return <div className="text-[12px] text-zinc-500 text-center py-8">no application data yet — sampler is collecting</div>;
+  }
+  const total = data.reduce((a, d) => a + d.down + d.up, 0);
+  let acc = 0;
+  const r = 50, cx = 64, cy = 64, stroke = 14, C = 2 * Math.PI * r;
+  const downBytes = data.reduce((a, d) => a + d.down, 0);
+  return (
+    <div className="flex items-center gap-6">
+      <div className="relative shrink-0" style={{ width: 128, height: 128 }}>
+        <svg viewBox="0 0 128 128" width="128" height="128" className="-rotate-90">
+          <circle cx={cx} cy={cy} r={r} fill="none" stroke="rgba(63,63,70,0.4)" strokeWidth={stroke} />
+          {data.map(d => {
+            const frac = (d.down + d.up) / total;
+            const dash = frac * C;
+            const offset = -acc * C;
+            acc += frac;
+            return <circle key={d.name} cx={cx} cy={cy} r={r} fill="none" stroke={d.color} strokeWidth={stroke} strokeDasharray={`${dash} ${C - dash}`} strokeDashoffset={offset} />;
+          })}
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <div className="font-display text-[20px] font-semibold text-zinc-100 leading-none">{humanBytes(total)}</div>
+          <div className="text-[10px] uppercase tracking-wider text-zinc-500 mt-1">total · 1h</div>
+        </div>
+      </div>
+      <div className="flex-1 min-w-0">
+        <table className="w-full text-[11.5px]">
+          <thead>
+            <tr className="text-zinc-500">
+              <th className="text-left font-medium pb-2">Application</th>
+              <th className="text-right font-medium pb-2 font-mono">Down</th>
+              <th className="text-right font-medium pb-2 font-mono">Up</th>
+              <th className="text-right font-medium pb-2 font-mono">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.slice(0, 6).map(d => (
+              <tr key={d.name} className="border-t border-zinc-800/40">
+                <td className="py-1.5"><div className="flex items-center gap-2"><span className="w-2 h-2 rounded-sm" style={{ background: d.color }} /><span className="text-zinc-200">{d.name}</span></div></td>
+                <td className="py-1.5 text-right font-mono text-emerald-300">{humanBytes(d.down)}</td>
+                <td className="py-1.5 text-right font-mono text-cyan-300">{humanBytes(d.up)}</td>
+                <td className="py-1.5 text-right font-mono text-zinc-300">{humanBytes(d.down + d.up)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
 
 function ApplicationBreakdown() {
   const total = APP_DATA.reduce((a, d) => a + d.down + d.up, 0);

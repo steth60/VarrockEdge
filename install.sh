@@ -37,10 +37,18 @@ echo "▸ Installing system packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y --no-install-recommends \
-  curl ca-certificates gnupg openssl \
+  curl ca-certificates gnupg openssl git \
   dnsmasq iptables iptables-persistent \
-  wireguard-tools sqlite3 \
+  wireguard-tools fail2ban conntrack iproute2 \
+  sqlite3 \
   build-essential python3 >/dev/null
+
+# Ookla speedtest (optional but enabled by default). Their apt repo:
+if ! command -v speedtest >/dev/null 2>&1; then
+  echo "▸ Installing Ookla speedtest CLI"
+  curl -fsSL https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | bash >/dev/null 2>&1 || true
+  apt-get install -y speedtest >/dev/null 2>&1 || echo "  speedtest install skipped (offline or repo unavailable)"
+fi
 
 # ─── Node.js 20 ──────────────────────────────────────────────────
 if ! command -v node >/dev/null 2>&1 || ! node -v | grep -q '^v20\|^v21\|^v22'; then

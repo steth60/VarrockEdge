@@ -17,6 +17,8 @@ existing Debian/Ubuntu stack.
 - [development.md](development.md) — local dev on macOS / Linux, tests, CI
 - [api.md](api.md) — REST endpoints, auth, request/response shapes
 - [updates.md](updates.md) — in-app self-update + missing-app installer
+- [multi-wan.md](multi-wan.md) — health-checked WAN failover
+- [per-flow-telemetry.md](per-flow-telemetry.md) — conntrack sampler + probers
 - [apps/](apps) — per-application docs for each underlying tool VarrokEdge
   drives:
   - [dnsmasq](apps/dnsmasq.md) — DHCP + DNS resolver

@@ -1,8 +1,12 @@
+import { useEffect, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { Icon } from './primitives';
 import type { Tweaks } from '../hooks/useTweaks';
 import { ACCENT_PALETTE } from '../hooks/useTweaks';
 import type { AuthUser } from '../hooks/useAuth';
+import { api } from '../api/client';
+
+interface Threat { id: number; severity: string; status: string }
 
 const NAV = [
   { id: 'overview', to: '/overview', label: 'Overview',       icon: 'LayoutDashboard', section: 'Monitor' },
@@ -24,6 +28,17 @@ const SECTIONS: Section[] = ['Monitor', 'Network', 'System'];
 export function Sidebar({ tweaks, user, onLogout }: { tweaks: Tweaks; user: AuthUser | null; onLogout: () => void }) {
   const accent = ACCENT_PALETTE[tweaks.accent];
   const initials = (user?.name ?? 'A').split(' ').map(s => s[0]).slice(0, 2).join('').toUpperCase();
+  const [openThreats, setOpenThreats] = useState<{ count: number; critical: number }>({ count: 0, critical: 0 });
+
+  useEffect(() => {
+    const load = () => api.get<{ threats: Threat[] }>('/api/security/threats').then(r => {
+      const open = r.threats.filter(t => t.status !== 'acked');
+      setOpenThreats({ count: open.length, critical: open.filter(t => t.severity === 'critical').length });
+    }).catch(() => {});
+    load();
+    const t = setInterval(load, 30_000);
+    return () => clearInterval(t);
+  }, []);
 
   return (
     <aside className="w-[62px] shrink-0 border-r border-zinc-800/70 bg-zinc-950/60 backdrop-blur flex flex-col items-center py-3 gap-2">
@@ -84,16 +99,22 @@ export function Sidebar({ tweaks, user, onLogout }: { tweaks: Tweaks; user: Auth
       <div className="flex flex-col items-center gap-1 shrink-0">
         <a
           href="/docs"
+          target="_blank"
+          rel="noopener"
           className="group relative w-9 h-9 rounded-lg flex items-center justify-center text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800/40 transition-colors"
         >
           <Icon name="BookOpen" size={16} />
-          <Tooltip label="Documentation" />
+          <Tooltip label="Documentation" hint="opens in new tab" />
         </a>
-        <button className="group relative w-9 h-9 rounded-lg flex items-center justify-center text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800/40 transition-colors">
+        <NavLink to="/logs" className="group relative w-9 h-9 rounded-lg flex items-center justify-center text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800/40 transition-colors">
           <Icon name="Bell" size={16} />
-          <span className="absolute top-1 right-1 w-3.5 h-3.5 rounded-full bg-rose-500 text-[8.5px] font-mono text-zinc-950 flex items-center justify-center">3</span>
-          <Tooltip label="Alerts" hint="3 new" />
-        </button>
+          {openThreats.count > 0 && (
+            <span className={`absolute top-1 right-1 min-w-3.5 h-3.5 px-1 rounded-full bg-rose-500 text-[8.5px] font-mono text-zinc-950 flex items-center justify-center ${openThreats.critical > 0 ? 'animate-pulse' : ''}`}>
+              {openThreats.count > 99 ? '99+' : openThreats.count}
+            </span>
+          )}
+          <Tooltip label="Alerts" hint={openThreats.count === 0 ? 'no open threats' : `${openThreats.count} open${openThreats.critical ? ` · ${openThreats.critical} critical` : ''}`} />
+        </NavLink>
         <button
           onClick={onLogout}
           className="group relative w-9 h-9 rounded-lg flex items-center justify-center transition-colors"

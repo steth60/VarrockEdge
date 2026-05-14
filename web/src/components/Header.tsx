@@ -1,5 +1,7 @@
-import { useLocation } from 'react-router-dom';
-import { Icon, StatusPill } from './primitives';
+import { useEffect, useState } from 'react';
+import { Link, useLocation } from 'react-router-dom';
+import { Icon, StatusPill, type StatusKind } from './primitives';
+import { api } from '../api/client';
 
 const TITLES: Record<string, { label: string; section: string; hint?: string }> = {
   '/overview': { section: 'Monitor', label: 'Overview' },
@@ -15,9 +17,25 @@ const TITLES: Record<string, { label: string; section: string; hint?: string }> 
   '/settings': { section: 'System',  label: 'Settings' },
 };
 
-export function Header() {
+interface Service { name: string; status: 'running' | 'stopped' | 'degraded' }
+
+export function Header({ onOpenPalette }: { onOpenPalette?: () => void }) {
   const loc = useLocation();
   const meta = TITLES[loc.pathname] ?? { section: 'Monitor', label: 'Overview' };
+  const [health, setHealth] = useState<{ status: StatusKind; label: string }>({ status: 'running', label: 'all systems normal' });
+
+  useEffect(() => {
+    const load = () => api.get<{ services: Service[] }>('/api/overview/services').then(r => {
+      const failed   = r.services.filter(s => s.status === 'stopped').length;
+      const degraded = r.services.filter(s => s.status === 'degraded').length;
+      if (failed > 0)        setHealth({ status: 'stopped',  label: `${failed} service${failed === 1 ? '' : 's'} down` });
+      else if (degraded > 0) setHealth({ status: 'degraded', label: `${degraded} degraded` });
+      else                   setHealth({ status: 'running',  label: 'all systems normal' });
+    }).catch(() => {});
+    load();
+    const t = setInterval(load, 30_000);
+    return () => clearInterval(t);
+  }, []);
 
   return (
     <header className="h-12 shrink-0 border-b border-zinc-800/70 bg-zinc-950/40 backdrop-blur flex items-center gap-4 px-5">
@@ -30,18 +48,22 @@ export function Header() {
         )}
       </div>
 
-      <div className="ml-6 relative flex-1 max-w-md">
+      <button
+        className="ml-6 relative flex-1 max-w-md text-left"
+        onClick={() => onOpenPalette?.()}
+      >
         <Icon name="Search" size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
-        <input
-          placeholder="Jump to host, lease, peer, rule…"
-          className="w-full h-8 pl-9 pr-16 rounded-md bg-zinc-900/50 border border-zinc-800/70 text-[12.5px] placeholder:text-zinc-600 focus:border-cyan-400/50 focus:bg-zinc-900 transition-colors"
-        />
+        <span className="block w-full h-8 pl-9 pr-16 rounded-md bg-zinc-900/50 border border-zinc-800/70 text-[12.5px] text-zinc-600 leading-8 hover:border-zinc-700 transition-colors">
+          Jump to host, lease, peer, rule…
+        </span>
         <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] font-mono text-zinc-500 bg-zinc-900/80 border border-zinc-800/70 px-1.5 py-0.5 rounded">⌘K</kbd>
-      </div>
+      </button>
 
       <div className="flex-1" />
 
-      <StatusPill status="running" label="all systems normal" />
+      <Link to="/services" title="Open service status">
+        <StatusPill status={health.status} label={health.label} />
+      </Link>
     </header>
   );
 }

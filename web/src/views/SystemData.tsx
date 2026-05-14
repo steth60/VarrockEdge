@@ -25,14 +25,29 @@ interface MetricsSnap { cpu: number; ram: number; ramTotal: number; eth0: { rxMb
 export function SystemData() {
   const [tab, setTab] = useState<'hardware' | 'memory' | 'network' | 'kernel'>('hardware');
   const [data, setData] = useState<Sysdata | null>(null);
+  const [paused, setPaused] = useState(false);
   const live = useSSE<MetricsSnap>('/api/metrics/stream');
 
   const reload = () => api.get<Sysdata>('/api/sysdata').then(setData).catch(() => {});
   useEffect(() => {
     reload();
+    if (paused) return;
     const t = setInterval(reload, 4_000);
     return () => clearInterval(t);
-  }, []);
+  }, [paused]);
+
+  const exportSnapshot = () => {
+    if (!data) return;
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `varrok-sysdata-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <div className="space-y-5">
@@ -51,8 +66,13 @@ export function SystemData() {
           ))}
         </div>
         <div className="flex items-center gap-2">
-          <Badge variant="info" size="sm" icon="Activity">live · 4s refresh</Badge>
-          <Button variant="secondary" size="sm" icon="Download">Export</Button>
+          {paused
+            ? <Badge variant="warn" size="sm" icon="Pause">paused</Badge>
+            : <Badge variant="info" size="sm" icon="Activity">live · 4s refresh</Badge>}
+          <Button variant="ghost" size="sm" icon={paused ? 'Play' : 'Pause'} onClick={() => setPaused(p => !p)}>
+            {paused ? 'Resume' : 'Pause'}
+          </Button>
+          <Button variant="secondary" size="sm" icon="Download" onClick={exportSnapshot} disabled={!data}>Export</Button>
         </div>
       </div>
 

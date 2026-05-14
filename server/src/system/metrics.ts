@@ -82,14 +82,41 @@ export function getIface(name: string): IfaceTput {
   }
 }
 
+export function getDisk(): { used: number; total: number } {
+  // Node 18+ has fs.statfsSync; degrade gracefully on older engines.
+  try {
+    const sf = (fs as any).statfsSync?.('/');
+    if (sf) {
+      const total = Number(sf.blocks) * Number(sf.bsize);
+      const free  = Number(sf.bavail) * Number(sf.bsize);
+      return { used: Math.round((total - free) / 1024 / 1024), total: Math.round(total / 1024 / 1024) };
+    }
+  } catch { /* ignore */ }
+  return { used: 0, total: 0 };
+}
+
+export function getTempC(): number | null {
+  if (!config.onLinux) return null;
+  try {
+    const v = Number(fs.readFileSync('/sys/class/thermal/thermal_zone0/temp', 'utf8').trim());
+    if (!Number.isFinite(v) || v <= 0) return null;
+    return v / 1000;   // millicelsius → celsius
+  } catch {
+    return null;
+  }
+}
+
 export function snapshot() {
   const mem = getMem();
+  const disk = getDisk();
   const wan = getIface(config.wanIface);
   const lan = getIface(config.lanIface);
   return {
     cpu: getCpu(),
     ram: mem.used,
     ramTotal: mem.total,
+    disk: { used: disk.used, total: disk.total },
+    tempC: getTempC(),
     eth0: { rxMbps: wan.rxMbps, txMbps: wan.txMbps },
     eth1: { rxMbps: lan.rxMbps, txMbps: lan.txMbps },
     loadAvg: os.loadavg(),

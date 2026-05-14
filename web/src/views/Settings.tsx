@@ -65,22 +65,131 @@ function General() {
   );
 }
 
+interface Wan {
+  id: number; iface: string; label: string; role: string; priority: number; healthTarget: string; enabled: boolean;
+  health: { status: 'up' | 'degraded' | 'down'; rttMs: number | null; lossPct: number | null; ts: number | null };
+}
+
 function Network() {
+  const [wans, setWans] = useState<Wan[]>([]);
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState({ iface: '', label: '', role: 'primary', priority: 200, healthTarget: '1.1.1.1' });
+
+  const reload = () => api.get<{ wans: Wan[] }>('/api/wan').then(r => setWans(r.wans)).catch(() => {});
+  useEffect(() => {
+    reload();
+    const t = setInterval(reload, 15_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const submit = async () => {
+    if (!draft.iface || !draft.label) { alert('iface and label required'); return; }
+    try {
+      await api.post('/api/wan', draft);
+      setDraft({ iface: '', label: '', role: 'primary', priority: 200, healthTarget: '1.1.1.1' });
+      setAdding(false);
+      reload();
+    } catch (err: any) { alert(err?.message ?? 'failed'); }
+  };
+
+  const toggle = async (w: Wan) => {
+    try { await api.patch(`/api/wan/${w.id}`, { enabled: !w.enabled }); reload(); }
+    catch (err: any) { alert(err?.message ?? 'failed'); }
+  };
+  const remove = async (w: Wan) => {
+    if (!window.confirm(`Remove ${w.iface}? Default route may change if this is the active WAN.`)) return;
+    try { await api.delete(`/api/wan/${w.id}`); reload(); }
+    catch (err: any) { alert(err?.message ?? 'failed'); }
+  };
+
   return (
     <>
-      <Card title="WAN (eth0)" subtitle="Public-facing interface — OVH uplink">
-        <SettingRow label="Addressing mode">
-          <Select className="max-w-sm" defaultValue="static">
-            <option value="static">Static</option><option value="dhcp">DHCP</option><option value="pppoe">PPPoE</option>
-          </Select>
-        </SettingRow>
-        <SettingRow label="IPv4 address"><Input mono className="max-w-sm" defaultValue="51.38.114.207/29" /></SettingRow>
-        <SettingRow label="Gateway"><Input mono className="max-w-sm" defaultValue="51.38.114.206" /></SettingRow>
-        <SettingRow label="MTU"><Input mono className="max-w-sm" defaultValue="1500" /></SettingRow>
+      <Card title="WAN interfaces" subtitle="Multi-WAN failover · health probed every 30s"
+            action={<Button variant="primary" size="sm" icon="Plus" onClick={() => setAdding(true)}>Add WAN</Button>}>
+        <table className="w-full text-[12.5px]">
+          <thead>
+            <tr className="text-left text-[10.5px] uppercase tracking-[0.08em] text-zinc-500 border-b border-zinc-800/70">
+              <th className="font-medium py-2.5">Iface</th>
+              <th className="font-medium py-2.5">Label</th>
+              <th className="font-medium py-2.5">Role</th>
+              <th className="font-medium py-2.5">Prio</th>
+              <th className="font-medium py-2.5">Health target</th>
+              <th className="font-medium py-2.5">Status</th>
+              <th className="font-medium py-2.5">RTT</th>
+              <th className="font-medium py-2.5">Loss</th>
+              <th className="font-medium py-2.5 text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-zinc-800/60">
+            {wans.map(w => {
+              const dot = w.health.status === 'up' ? 'bg-emerald-400' : w.health.status === 'degraded' ? 'bg-amber-400' : 'bg-rose-400';
+              return (
+                <tr key={w.id} className="hover:bg-zinc-900/30 group">
+                  <td className="py-3 font-mono text-zinc-100">{w.iface}</td>
+                  <td className="py-3 text-zinc-300">{w.label}</td>
+                  <td className="py-3"><Badge variant={w.role === 'primary' ? 'accent' : w.role === 'failover' ? 'info' : 'neutral'} size="sm">{w.role}</Badge></td>
+                  <td className="py-3 font-mono text-zinc-400">{w.priority}</td>
+                  <td className="py-3 font-mono text-cyan-300">{w.healthTarget}</td>
+                  <td className="py-3">
+                    <span className="inline-flex items-center gap-2 text-[11.5px]">
+                      <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
+                      <span className={w.health.status === 'up' ? 'text-emerald-300' : w.health.status === 'degraded' ? 'text-amber-300' : 'text-rose-300'}>{w.health.status}</span>
+                    </span>
+                  </td>
+                  <td className="py-3 font-mono text-zinc-400">{w.health.rttMs?.toFixed(0) ?? '—'}{w.health.rttMs !== null ? 'ms' : ''}</td>
+                  <td className="py-3 font-mono text-zinc-400">{w.health.lossPct?.toFixed(0) ?? '—'}%</td>
+                  <td className="py-3 text-right">
+                    <div className="inline-flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <Button variant="ghost" size="sm" icon={w.enabled ? 'Pause' : 'Play'} onClick={() => toggle(w)}>{w.enabled ? 'Disable' : 'Enable'}</Button>
+                      <Button variant="danger" size="sm" icon="Trash2" onClick={() => remove(w)}>Remove</Button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+            {wans.length === 0 && <tr><td colSpan={9} className="py-8 text-center text-[12px] text-zinc-600">no WANs configured</td></tr>}
+          </tbody>
+        </table>
       </Card>
-      <Card title="LAN (eth1)" subtitle="Private bridge — 10.0.0.0/24">
-        <SettingRow label="IPv4 address"><Input mono className="max-w-sm" defaultValue="10.0.0.1/24" /></SettingRow>
-        <SettingRow label="Bridge"><Input mono className="max-w-sm" defaultValue="vmbr1" /></SettingRow>
+
+      {adding && (
+        <Card title="Add WAN interface" subtitle="Must be configured at the OS / Proxmox layer first">
+          <div className="grid grid-cols-2 gap-4">
+            <label className="block">
+              <span className="text-[11px] text-zinc-400">Interface</span>
+              <Input mono placeholder="eth0:1" value={draft.iface} onChange={(e) => setDraft({ ...draft, iface: e.target.value })} className="mt-1 w-full" />
+            </label>
+            <label className="block">
+              <span className="text-[11px] text-zinc-400">Label</span>
+              <Input placeholder="Mobile 4G" value={draft.label} onChange={(e) => setDraft({ ...draft, label: e.target.value })} className="mt-1 w-full" />
+            </label>
+            <label className="block">
+              <span className="text-[11px] text-zinc-400">Role</span>
+              <Select value={draft.role} onChange={(e) => setDraft({ ...draft, role: e.target.value })} className="mt-1 w-full">
+                <option value="primary">primary</option>
+                <option value="failover">failover</option>
+                <option value="snat-only">snat-only</option>
+              </Select>
+            </label>
+            <label className="block">
+              <span className="text-[11px] text-zinc-400">Priority (lower = higher)</span>
+              <Input mono type="number" value={String(draft.priority)} onChange={(e) => setDraft({ ...draft, priority: Number(e.target.value) || 200 })} className="mt-1 w-full" />
+            </label>
+            <label className="block col-span-2">
+              <span className="text-[11px] text-zinc-400">Health-check target</span>
+              <Input mono value={draft.healthTarget} onChange={(e) => setDraft({ ...draft, healthTarget: e.target.value })} className="mt-1 w-full" />
+            </label>
+          </div>
+          <div className="flex gap-2 justify-end pt-4">
+            <Button variant="ghost" onClick={() => setAdding(false)}>Cancel</Button>
+            <Button variant="primary" icon="Plus" onClick={submit}>Save</Button>
+          </div>
+        </Card>
+      )}
+
+      <Card title="LAN" subtitle="Private bridge (read-only — change at OS layer)">
+        <SettingRow label="IPv4 address"><Input mono className="max-w-sm" defaultValue="10.0.0.1/24" readOnly /></SettingRow>
+        <SettingRow label="Bridge"><Input mono className="max-w-sm" defaultValue="vmbr1" readOnly /></SettingRow>
       </Card>
     </>
   );

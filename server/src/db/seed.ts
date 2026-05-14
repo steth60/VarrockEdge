@@ -1,5 +1,5 @@
 import { db } from './client';
-import { users, dhcpScope, dnsUpstreams, fwSnat, detectionRules } from './schema';
+import { users, dhcpScope, dnsUpstreams, fwSnat, detectionRules, wanInterfaces } from './schema';
 import { hash } from '../auth/password';
 import { config } from '../config';
 import { log } from '../logger';
@@ -70,6 +70,20 @@ async function main() {
       isCore: true,
     }).run();
     log.info('seeded core MASQUERADE rule');
+  }
+
+  const wans = db.select().from(wanInterfaces).all();
+  if (wans.length === 0) {
+    db.insert(wanInterfaces).values({
+      iface: config.wanIface,
+      label: 'Primary WAN',
+      role: 'primary',
+      priority: 100,
+      healthTarget: '1.1.1.1',
+      enabled: true,
+      createdAt: Date.now(),
+    }).run();
+    log.info({ iface: config.wanIface }, 'seeded primary WAN');
   }
 }
 

@@ -167,3 +167,70 @@ export type FwRule = typeof fwRules.$inferSelect;
 export type DetectionRule = typeof detectionRules.$inferSelect;
 export type Threat = typeof threats.$inferSelect;
 export type EventBucket = typeof eventBuckets.$inferSelect;
+
+// ─── Per-flow telemetry (sampled from conntrack) ────────────────
+export const flowTopClients = sqliteTable('flow_top_clients', {
+  window:    text('window').notNull(),
+  srcIp:     text('src_ip').notNull(),
+  hostHint:  text('host_hint'),
+  packets:   integer('packets').notNull().default(0),
+  bytes:     integer('bytes').notNull().default(0),
+  updatedAt: integer('updated_at').notNull(),
+});
+
+export const flowTopServices = sqliteTable('flow_top_services', {
+  window:    text('window').notNull(),
+  dport:     integer('dport').notNull(),
+  proto:     text('proto').notNull(),
+  packets:   integer('packets').notNull().default(0),
+  bytes:     integer('bytes').notNull().default(0),
+  updatedAt: integer('updated_at').notNull(),
+});
+
+export const flowTopDestinations = sqliteTable('flow_top_destinations', {
+  window:      text('window').notNull(),
+  dstIp:       text('dst_ip').notNull(),
+  countryHint: text('country_hint'),
+  packets:     integer('packets').notNull().default(0),
+  bytes:       integer('bytes').notNull().default(0),
+  updatedAt:   integer('updated_at').notNull(),
+});
+
+export const flowApps = sqliteTable('flow_apps', {
+  window:    text('window').notNull(),
+  app:       text('app').notNull(),
+  downBytes: integer('down_bytes').notNull().default(0),
+  upBytes:   integer('up_bytes').notNull().default(0),
+  updatedAt: integer('updated_at').notNull(),
+});
+
+export const latencyBuckets = sqliteTable('latency_buckets', {
+  minute:   integer('minute').primaryKey(),
+  avgMs:    real('avg_ms'),
+  lossPct:  real('loss_pct'),
+});
+
+export const availabilityBuckets = sqliteTable('availability_buckets', {
+  target: text('target').notNull(),
+  bucket: integer('bucket').notNull(),
+  status: text('status').notNull(),
+});
+
+export const wanInterfaces = sqliteTable('wan_interfaces', {
+  id:           integer('id').primaryKey({ autoIncrement: true }),
+  iface:        text('iface').notNull().unique(),
+  label:        text('label').notNull(),
+  role:         text('role').notNull().default('primary'),
+  priority:     integer('priority').notNull().default(100),
+  healthTarget: text('health_target').notNull().default('1.1.1.1'),
+  enabled:      integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  createdAt:    integer('created_at').notNull(),
+});
+
+export const wanHealth = sqliteTable('wan_health', {
+  iface:   text('iface').notNull(),
+  ts:      integer('ts').notNull(),
+  status:  text('status').notNull(),
+  rttMs:   real('rtt_ms'),
+  lossPct: real('loss_pct'),
+});

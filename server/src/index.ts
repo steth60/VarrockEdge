@@ -23,8 +23,16 @@ import securityRoutes from './routes/security';
 import servicesRoutes from './routes/services';
 import systemRoutes from './routes/system';
 import sysdataRoutes from './routes/sysdata';
+import docsRoutes from './routes/docs';
+import probesRoutes from './routes/probes';
+import flowsRoutes from './routes/flows';
+import wanRoutes from './routes/wan';
 import { startDetector } from './system/detector';
 import { ensureServerAsync } from './system/wireguard';
+import { startConntrackSampler } from './system/conntrack';
+import { startLatencyProbe } from './system/latencyProbe';
+import { startAvailabilityProbe } from './system/availabilityProbe';
+import { startWanLoop } from './system/wan';
 
 function refuseUnsafeBind(host: string) {
   if (host === '0.0.0.0' || host === '::' || host === '*') {
@@ -51,6 +59,10 @@ async function main() {
   runMigrations();
   await ensureServerAsync().catch(err => log.warn({ err }, 'wg init skipped'));
   startDetector();
+  startConntrackSampler();
+  startLatencyProbe();
+  startAvailabilityProbe();
+  startWanLoop();
 
   const app = express();
   app.disable('x-powered-by');
@@ -76,6 +88,12 @@ async function main() {
   app.use('/api/services', requireAuth, servicesRoutes);
   app.use('/api/system',   requireAuth, systemRoutes);
   app.use('/api/sysdata',  requireAuth, sysdataRoutes);
+  app.use('/api/probes',   requireAuth, probesRoutes);
+  app.use('/api/flows',    requireAuth, flowsRoutes);
+  app.use('/api/wan',      requireAuth, wanRoutes);
+
+  // In-app docs viewer — must be mounted BEFORE the SPA catch-all.
+  app.use('/docs', requireAuth, docsRoutes);
 
   // Static SPA. Vite emits content-hashed asset filenames (index-<sha>.js,
   // ...css) which are safe to cache forever. But index.html itself must not
