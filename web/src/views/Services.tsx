@@ -56,6 +56,8 @@ export function Services() {
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Service | null>(null);
   const [busy, setBusy] = useState<Record<string, string>>({});
+  const [installing, setInstalling] = useState(false);
+  const [installLog, setInstallLog] = useState<string[]>([]);
 
   const reload = () => {
     api.get<{ services: Service[] }>('/api/services').then(r => setServices(r.services)).catch(() => {});
@@ -85,6 +87,54 @@ export function Services() {
 
   const missing = requirements.filter(r => !r.installed);
 
+  const installAll = async () => {
+    if (installing) return;
+    const pkgs = Array.from(new Set(missing.map(m => (m as any).pkg).filter(Boolean)));
+    if (pkgs.length === 0) return;
+    if (!window.confirm(`Run \`apt-get install -y ${pkgs.join(' ')}\`?`)) return;
+    setInstalling(true);
+    setInstallLog([]);
+    try {
+      const resp = await fetch('/api/system/apps/install', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      if (!resp.ok || !resp.body) {
+        const t = await resp.text();
+        throw new Error(`HTTP ${resp.status}: ${t}`);
+      }
+      const reader = resp.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n\n');
+        buf = lines.pop() ?? '';
+        for (const block of lines) {
+          for (const line of block.split('\n')) {
+            if (line.startsWith('data: ')) {
+              try {
+                const ev = JSON.parse(line.slice(6));
+                const tag = ev.step ?? ev.event ?? '?';
+                const st  = ev.status ?? (ev.ok === false ? 'fail' : ev.ok === true ? 'ok' : '');
+                setInstallLog(prev => [...prev, `[${tag}] ${st} ${ev.msg ?? ''}`].slice(-40));
+              } catch { /* ignore */ }
+            }
+          }
+        }
+      }
+      reload();
+    } catch (err: any) {
+      alert(err?.message ?? 'install failed');
+    } finally {
+      setInstalling(false);
+    }
+  };
+
   const runAction = async (unit: string, action: 'start' | 'stop' | 'restart' | 'reload' | 'enable' | 'disable') => {
     setBusy(b => ({ ...b, [unit]: action }));
     try {
@@ -105,12 +155,21 @@ export function Services() {
           <div className="px-5 py-4 flex items-start gap-3">
             <Icon name="AlertTriangle" size={18} className="text-amber-300 mt-0.5 shrink-0" />
             <div className="flex-1">
-              <div className="text-[13px] font-medium text-amber-200">
-                {missing.length} underlying application{missing.length === 1 ? ' is' : 's are'} missing
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-[13px] font-medium text-amber-200">
+                    {missing.length} underlying application{missing.length === 1 ? ' is' : 's are'} missing
+                  </div>
+                  <p className="text-[11.5px] text-amber-200/80 mt-0.5">
+                    VarrokEdge orchestrates native Linux tools. Features depending on these won't work until they're installed.
+                  </p>
+                </div>
+                <Button variant="primary" size="sm" icon={installing ? 'Loader2' : 'Download'}
+                        className={installing ? '[&_svg]:animate-spin' : ''}
+                        onClick={installAll} disabled={installing}>
+                  {installing ? 'Installing…' : 'Install all'}
+                </Button>
               </div>
-              <p className="text-[11.5px] text-amber-200/80 mt-0.5">
-                VarrokEdge orchestrates native Linux tools. Features depending on these won't work until they're installed.
-              </p>
               <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2">
                 {missing.map(m => (
                   <div key={m.binary} className="flex items-center gap-2.5 p-2 rounded-md bg-zinc-950/60 border border-amber-400/15">
@@ -123,6 +182,11 @@ export function Services() {
                   </div>
                 ))}
               </div>
+              {installLog.length > 0 && (
+                <pre className="mt-3 bg-zinc-950/70 border border-zinc-800/60 rounded-md p-2 text-[10.5px] font-mono text-zinc-400 max-h-[160px] overflow-auto">
+{installLog.join('\n')}
+                </pre>
+              )}
             </div>
           </div>
         </Card>

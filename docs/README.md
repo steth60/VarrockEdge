@@ -16,6 +16,7 @@ existing Debian/Ubuntu stack.
 - [installation.md](installation.md) — install on a fresh LXC
 - [development.md](development.md) — local dev on macOS / Linux, tests, CI
 - [api.md](api.md) — REST endpoints, auth, request/response shapes
+- [updates.md](updates.md) — in-app self-update + missing-app installer
 - [apps/](apps) — per-application docs for each underlying tool VarrokEdge
   drives:
   - [dnsmasq](apps/dnsmasq.md) — DHCP + DNS resolver

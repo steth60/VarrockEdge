@@ -50,7 +50,7 @@ const UNITS: Array<Omit<Service, 'status' | 'sub' | 'enabled' | 'uptime' | 'pid'
 async function which(binary: string): Promise<boolean> {
   if (!config.onLinux) {
     // Pretend the core appliance deps are installed on macOS dev.
-    const installed = new Set(['dnsmasq', 'wg-quick', 'iptables', 'fail2ban-client', 'systemd-journald', 'systemd-timesyncd', 'cron', 'sshd', 'node']);
+    const installed = new Set(['dnsmasq', 'wg-quick', 'iptables', 'fail2ban-client', 'systemd-journald', 'systemd-timesyncd', 'cron', 'sshd', 'node', 'git']);
     return installed.has(binary);
   }
   try {
@@ -219,19 +219,22 @@ export interface Requirement {
   feature: string;
   installed: boolean;
   hint: string;
+  /** apt package name, or null if not installable via apt (built-in to systemd, etc.) */
+  pkg: string | null;
 }
 
 const REQUIREMENTS: Array<Omit<Requirement, 'installed'>> = [
-  { name: 'dnsmasq',            binary: 'dnsmasq',         feature: 'DHCP + Local DNS',         hint: 'apt-get install dnsmasq' },
-  { name: 'WireGuard tools',    binary: 'wg',              feature: 'VPN tunnel + peers',       hint: 'apt-get install wireguard-tools' },
-  { name: 'wg-quick',           binary: 'wg-quick',        feature: 'WireGuard interface mgmt', hint: 'apt-get install wireguard-tools' },
-  { name: 'iptables',           binary: 'iptables',        feature: 'NAT + firewall rules',     hint: 'apt-get install iptables' },
-  { name: 'iptables-save',      binary: 'iptables-save',   feature: 'Persist firewall on boot', hint: 'apt-get install iptables-persistent' },
-  { name: 'netfilter-persistent', binary: 'netfilter-persistent', feature: 'Restore rules at boot', hint: 'apt-get install iptables-persistent' },
-  { name: 'fail2ban',           binary: 'fail2ban-client', feature: 'Security: block list / IDS', hint: 'apt-get install fail2ban' },
-  { name: 'systemctl',          binary: 'systemctl',       feature: 'Service supervision',      hint: 'systemd (built-in)' },
-  { name: 'journalctl',         binary: 'journalctl',      feature: 'Log streaming',            hint: 'systemd (built-in)' },
-  { name: 'sqlite3',            binary: 'sqlite3',         feature: 'DB CLI (optional)',        hint: 'apt-get install sqlite3' },
+  { name: 'dnsmasq',            binary: 'dnsmasq',         feature: 'DHCP + Local DNS',         hint: 'apt-get install dnsmasq',              pkg: 'dnsmasq' },
+  { name: 'WireGuard tools',    binary: 'wg',              feature: 'VPN tunnel + peers',       hint: 'apt-get install wireguard-tools',      pkg: 'wireguard-tools' },
+  { name: 'wg-quick',           binary: 'wg-quick',        feature: 'WireGuard interface mgmt', hint: 'apt-get install wireguard-tools',      pkg: 'wireguard-tools' },
+  { name: 'iptables',           binary: 'iptables',        feature: 'NAT + firewall rules',     hint: 'apt-get install iptables',             pkg: 'iptables' },
+  { name: 'iptables-save',      binary: 'iptables-save',   feature: 'Persist firewall on boot', hint: 'apt-get install iptables-persistent',  pkg: 'iptables-persistent' },
+  { name: 'netfilter-persistent', binary: 'netfilter-persistent', feature: 'Restore rules at boot', hint: 'apt-get install iptables-persistent', pkg: 'iptables-persistent' },
+  { name: 'fail2ban',           binary: 'fail2ban-client', feature: 'Security: block list / IDS', hint: 'apt-get install fail2ban',           pkg: 'fail2ban' },
+  { name: 'systemctl',          binary: 'systemctl',       feature: 'Service supervision',      hint: 'systemd (built-in)',                   pkg: null },
+  { name: 'journalctl',         binary: 'journalctl',      feature: 'Log streaming',            hint: 'systemd (built-in)',                   pkg: null },
+  { name: 'sqlite3',            binary: 'sqlite3',         feature: 'DB CLI (optional)',        hint: 'apt-get install sqlite3',              pkg: 'sqlite3' },
+  { name: 'git',                binary: 'git',             feature: 'Self-update via pull',     hint: 'apt-get install git',                  pkg: 'git' },
 ];
 
 export async function checkRequirements(): Promise<Requirement[]> {

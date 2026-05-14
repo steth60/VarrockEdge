@@ -21,6 +21,7 @@ import logsRoutes from './routes/logs';
 import topologyRoutes from './routes/topology';
 import securityRoutes from './routes/security';
 import servicesRoutes from './routes/services';
+import systemRoutes from './routes/system';
 import { startDetector } from './system/detector';
 import { ensureServerAsync } from './system/wireguard';
 
@@ -72,6 +73,7 @@ async function main() {
   app.use('/api/topology', requireAuth, topologyRoutes);
   app.use('/api/security', requireAuth, securityRoutes);
   app.use('/api/services', requireAuth, servicesRoutes);
+  app.use('/api/system',   requireAuth, systemRoutes);
 
   // Static SPA
   if (fs.existsSync(config.publicDir)) {

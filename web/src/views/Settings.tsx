@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Card, Button, SettingRow, ToggleSwitch, Input, Select, KV, Icon, Badge } from '../components/primitives';
 import { api } from '../api/client';
 
@@ -107,20 +107,227 @@ function Security() {
   );
 }
 
+interface Version {
+  sha: string | null; short: string | null; branch: string | null;
+  message: string | null; date: string | null; dirty: boolean; gitAvailable: boolean;
+}
+interface CommitSummary { sha: string; short: string; message: string; date: string }
+interface CheckResult { ahead: number; behind: number; commits: CommitSummary[]; branch: string | null; remote: string | null }
+interface UpdateEvent { step?: string; status?: 'start' | 'ok' | 'fail' | 'skip'; msg?: string; exit?: number; event?: 'restart' | 'done' | 'lock'; ok?: boolean }
+interface MissingApps { missing: Array<{ binary: string; pkg: string | null; feature: string; hint: string }>; installable: string[] }
+
 function Updates() {
+  const [version, setVersion] = useState<Version | null>(null);
+  const [check, setCheck] = useState<CheckResult | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [restartPolling, setRestartPolling] = useState(false);
+  const [events, setEvents] = useState<UpdateEvent[]>([]);
+  const [installMissing, setInstallMissing] = useState(true);
+  const [apps, setApps] = useState<MissingApps | null>(null);
+  const esRef = useRef<EventSource | null>(null);
+
+  const loadVersion = () => api.get<Version>('/api/system/version').then(setVersion).catch(() => {});
+  const loadApps    = () => api.get<MissingApps>('/api/system/apps/missing').then(setApps).catch(() => {});
+
+  useEffect(() => { loadVersion(); loadApps(); }, []);
+
+  const runCheck = async () => {
+    setChecking(true);
+    setCheck(null);
+    try {
+      const r = await api.post<CheckResult>('/api/system/update/check');
+      setCheck(r);
+    } catch (err: any) { alert(err?.message ?? 'check failed'); }
+    finally { setChecking(false); }
+  };
+
+  // POST + SSE: we need to seed the request via fetch and read the stream manually
+  // since EventSource only supports GET.
+  const runUpdate = async () => {
+    if (running) return;
+    if (!window.confirm('Pull latest code, install missing apps (if checked), run migrations, and restart the service?')) return;
+    setRunning(true);
+    setEvents([]);
+    try {
+      const resp = await fetch('/api/system/update/run', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ installMissing }),
+      });
+      if (!resp.ok || !resp.body) {
+        const t = await resp.text();
+        throw new Error(`HTTP ${resp.status}: ${t}`);
+      }
+      const reader = resp.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n\n');
+        buf = lines.pop() ?? '';
+        for (const block of lines) {
+          for (const line of block.split('\n')) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const ev: UpdateEvent = JSON.parse(line.slice(6));
+              setEvents(prev => [...prev, ev]);
+              if (ev.event === 'restart') setRestartPolling(true);
+            } catch { /* ignore */ }
+          }
+        }
+      }
+    } catch (err: any) {
+      setEvents(prev => [...prev, { step: 'error', status: 'fail', msg: err?.message ?? String(err) }]);
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  // While a restart is happening, poll /api/system/version until the SHA changes.
+  useEffect(() => {
+    if (!restartPolling) return;
+    const startSha = version?.sha;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const v = await api.get<Version>('/api/system/version');
+        if (!cancelled && v.sha && v.sha !== startSha) {
+          setRestartPolling(false);
+          setVersion(v);
+          setEvents(prev => [...prev, { step: 'restart', status: 'ok', msg: `now at ${v.short}` }]);
+          loadApps();
+        }
+      } catch { /* server still down */ }
+    };
+    const t = setInterval(tick, 2_000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [restartPolling, version?.sha]);
+
   return (
-    <Card title="System Updates" subtitle="VarrokEdge appliance image">
-      <div className="flex items-center gap-4 p-4 rounded-lg bg-zinc-900/40 border border-zinc-800/60">
-        <div className="w-10 h-10 rounded-lg bg-cyan-400/15 flex items-center justify-center">
-          <Icon name="Download" size={18} className="text-cyan-300" />
+    <>
+      <Card title="Current build" subtitle="What's running right now">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-5">
+          <KV k="Commit"   v={version?.short ?? '—'} mono />
+          <KV k="Branch"   v={version?.branch ?? '—'} mono />
+          <KV k="Released" v={version?.date ? new Date(version.date).toLocaleString() : '—'} mono />
+          <KV k="Status"   v={version?.dirty ? 'dirty working tree' : version?.gitAvailable ? 'clean' : 'git unavailable'} />
         </div>
-        <div className="flex-1">
-          <div className="text-[13px] font-medium text-zinc-100">You're on the latest version — v0.9.2</div>
-          <div className="text-[11.5px] text-zinc-500">Released 2 weeks ago · check back later for updates</div>
-        </div>
-        <Button variant="ghost" size="md" icon="RefreshCw">Check now</Button>
-      </div>
-    </Card>
+        {version?.message && (
+          <div className="mt-4 p-3 rounded-lg bg-zinc-900/40 border border-zinc-800/60">
+            <div className="text-[10.5px] uppercase tracking-[0.08em] text-zinc-500 mb-1">Latest commit</div>
+            <div className="text-[12.5px] text-zinc-200">{version.message}</div>
+          </div>
+        )}
+      </Card>
+
+      <Card title="System Updates" subtitle="Pull latest from origin and apply"
+            action={<Button variant="ghost" size="sm" icon="RefreshCw" onClick={runCheck} disabled={checking || running}>{checking ? 'Checking…' : 'Check now'}</Button>}>
+        {check === null && !checking && (
+          <p className="text-[12px] text-zinc-500 leading-relaxed">
+            Click <strong>Check now</strong> to <code className="font-mono">git fetch</code> and see if {version?.branch ? <>origin/<code className="font-mono">{version.branch}</code></> : 'origin'} is ahead of this build.
+          </p>
+        )}
+        {checking && (
+          <div className="flex items-center gap-3">
+            <span className="shimmer h-2 rounded flex-1" />
+            <span className="text-[11px] font-mono text-zinc-500">git fetch…</span>
+          </div>
+        )}
+        {check && check.behind === 0 && (
+          <div className="flex items-center gap-3 p-4 rounded-lg bg-emerald-500/10 border border-emerald-400/30">
+            <Icon name="CheckCircle2" size={18} className="text-emerald-300" />
+            <div className="flex-1">
+              <div className="text-[13px] font-medium text-emerald-200">Up to date</div>
+              <div className="text-[11.5px] text-emerald-200/80 mt-0.5">{check.branch} is at the same commit as {check.remote}.</div>
+            </div>
+          </div>
+        )}
+        {check && check.behind > 0 && (
+          <div className="space-y-4">
+            <div className="flex items-center gap-3 p-4 rounded-lg bg-cyan-500/10 border border-cyan-400/30">
+              <Icon name="Download" size={18} className="text-cyan-300" />
+              <div className="flex-1">
+                <div className="text-[13px] font-medium text-cyan-200">
+                  {check.behind} commit{check.behind === 1 ? '' : 's'} behind {check.remote}
+                </div>
+                <div className="text-[11.5px] text-cyan-200/80 mt-0.5">Pulling will reset hard to {check.remote} — local changes are lost.</div>
+              </div>
+              <label className="flex items-center gap-2 text-[11.5px] text-zinc-300 cursor-pointer">
+                <input type="checkbox" checked={installMissing} onChange={(e) => setInstallMissing(e.target.checked)} className="accent-cyan-400" />
+                also install missing apps
+              </label>
+              <Button variant="primary" size="md" icon="Download" onClick={runUpdate} disabled={running}>{running ? 'Installing…' : 'Install update'}</Button>
+            </div>
+
+            <div className="max-h-[260px] overflow-auto">
+              <div className="text-[10.5px] uppercase tracking-[0.08em] text-zinc-500 mb-2">Incoming commits</div>
+              <table className="w-full text-[12px]">
+                <tbody className="divide-y divide-zinc-800/60">
+                  {check.commits.map(c => (
+                    <tr key={c.sha} className="hover:bg-zinc-900/30">
+                      <td className="py-2 px-2 font-mono text-cyan-300">{c.short}</td>
+                      <td className="py-2 px-2 text-zinc-300 truncate">{c.message}</td>
+                      <td className="py-2 px-2 font-mono text-zinc-500 text-[10.5px]">{new Date(c.date).toLocaleDateString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </Card>
+
+      {(events.length > 0 || running || restartPolling) && (
+        <Card title="Update progress" subtitle={restartPolling ? 'Service restarting — waiting for the new commit…' : running ? 'Running…' : 'Last run'}
+              action={restartPolling && <Badge variant="warn" size="sm" icon="Loader2">restarting</Badge>}>
+          <div className="bg-zinc-950/60 border border-zinc-800/60 rounded-lg p-3 font-mono text-[11.5px] leading-relaxed max-h-[360px] overflow-auto">
+            {events.map((ev, i) => {
+              const color =
+                ev.status === 'fail' ? 'text-rose-300' :
+                ev.status === 'ok'   ? 'text-emerald-300' :
+                ev.status === 'skip' ? 'text-zinc-500' :
+                                       'text-sky-300';
+              const label = ev.event ? `[${ev.event}]` : `[${ev.step ?? '?'}]`;
+              const statusBadge = ev.status ? ev.status.toUpperCase() : '';
+              return (
+                <div key={i} className="flex gap-3 hover:bg-zinc-900/30 -mx-1 px-1 rounded">
+                  <span className={`shrink-0 w-20 ${color}`}>{label}</span>
+                  <span className={`shrink-0 w-12 ${color}`}>{statusBadge}</span>
+                  <span className="text-zinc-300 truncate">{ev.msg ?? ''}</span>
+                </div>
+              );
+            })}
+            {(running || restartPolling) && (
+              <div className="flex gap-3 mt-2 opacity-70">
+                <span className="text-zinc-600 shrink-0">— working —</span>
+                <span className="shimmer h-3 rounded flex-1 max-w-md" />
+              </div>
+            )}
+          </div>
+        </Card>
+      )}
+
+      {apps && apps.missing.length > 0 && (
+        <Card title="Missing applications" subtitle={`${apps.missing.length} required tool${apps.missing.length === 1 ? '' : 's'} not installed`}>
+          <table className="w-full text-[12.5px]">
+            <tbody className="divide-y divide-zinc-800/60">
+              {apps.missing.map(m => (
+                <tr key={m.binary}>
+                  <td className="py-2 font-mono text-zinc-100">{m.binary}</td>
+                  <td className="py-2 text-zinc-400">{m.feature}</td>
+                  <td className="py-2 font-mono text-[11px] text-cyan-300">{m.hint}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="text-[11.5px] text-zinc-500 mt-3">Tick "also install missing apps" above when running an update, or run `apt-get` manually.</p>
+        </Card>
+      )}
+    </>
   );
 }
 
