@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Card, StatusPill, Button, Icon, KV, Badge, LegendDot, Select } from '../components/primitives';
+import { Card, StatusPill, Button, Icon, KV, Badge, LegendDot, Select, Modal } from '../components/primitives';
 import { useSSE } from '../api/sse';
 import { api } from '../api/client';
 
@@ -427,8 +427,24 @@ function LatencyPills() {
   );
 }
 
-interface SpeedResult { downloadMbps: number; uploadMbps: number; pingMs: number; isp: string | null; server: string | null; source: string }
+interface SpeedResult { downloadMbps: number; uploadMbps: number; pingMs: number; isp: string | null; server: string | null; source: string; ts: number }
 interface SpeedEvent { phase: 'ping' | 'download' | 'upload' | 'done' | 'error'; mbps?: number; pingMs?: number; elapsed?: number; result?: SpeedResult }
+
+interface HistoryRun {
+  id: number; ts: number;
+  downloadMbps: number; uploadMbps: number; pingMs: number;
+  isp: string | null; server: string | null;
+  source: 'ookla' | 'synthetic';
+  trigger: 'manual' | 'scheduled';
+}
+
+function timeAgo(ts: number): string {
+  const s = Math.floor((Date.now() - ts) / 1000);
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
 
 function SpeedTestCard() {
   const [phase, setPhase] = useState<'idle' | 'ping' | 'download' | 'upload' | 'done' | 'error'>('idle');
@@ -436,8 +452,16 @@ function SpeedTestCard() {
   const [upSamples, setUpSamples] = useState<number[]>([]);
   const [livePing, setLivePing] = useState<number | null>(null);
   const [result, setResult] = useState<SpeedResult | null>(null);
-  const [progress, setProgress] = useState(0); // 0..1 within current phase
+  const [progress, setProgress] = useState(0);
+  const [lastRun, setLastRun] = useState<HistoryRun | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const esRef = useRef<EventSource | null>(null);
+
+  // Fetch the most recent run so the "idle" card shows real numbers instead of dashes.
+  const loadLastRun = () => api.get<{ runs: HistoryRun[] }>('/api/probes/speedtest/history?limit=1')
+    .then(r => setLastRun(r.runs[0] ?? null))
+    .catch(() => {});
+  useEffect(() => { loadLastRun(); }, []);
 
   const start = () => {
     if (phase !== 'idle' && phase !== 'done' && phase !== 'error') return;
@@ -468,6 +492,7 @@ function SpeedTestCard() {
           setPhase('done');
           setResult(ev.result);
           setProgress(1);
+          loadLastRun(); // refresh the cached "last run" so dismiss → idle shows the new numbers
           es.close();
         } else if (ev.phase === 'error') {
           setPhase('error');
@@ -476,8 +501,6 @@ function SpeedTestCard() {
       } catch { /* ignore */ }
     };
     es.onerror = () => {
-      // EventSource closes on network error or non-200; surface as error
-      // unless we've already received the `done` event.
       setPhase(p => (p === 'done' ? p : 'error'));
       es.close();
     };
@@ -485,53 +508,60 @@ function SpeedTestCard() {
 
   useEffect(() => () => { esRef.current?.close(); }, []);
 
-  if (phase === 'idle') {
-    return (
-      <Card padding="p-4">
-        <div className="grid grid-cols-3 gap-2 text-center">
-          {(['Down', 'Up', 'Ping'] as const).map(l => (
-            <div key={l}>
-              <div className="text-[10px] uppercase tracking-wider text-zinc-500">{l}</div>
-              <div className="font-mono text-[14px] text-zinc-600 mt-1">—</div>
-              <div className="text-[10px] text-zinc-500">{l === 'Ping' ? 'ms' : 'Mbps'}</div>
-            </div>
-          ))}
-        </div>
-        <Button variant="primary" size="md" icon="Gauge" className="w-full mt-3" onClick={start}>ISP speed test</Button>
-      </Card>
-    );
-  }
+  // Convenience: a single render path for idle (with optional lastRun) and done.
+  if (phase === 'idle' || (phase === 'done' && result)) {
+    const showing = phase === 'done' && result
+      ? { down: result.downloadMbps, up: result.uploadMbps, ping: result.pingMs, source: result.source, isp: result.isp, ts: result.ts, label: 'just now' }
+      : lastRun
+      ? { down: lastRun.downloadMbps, up: lastRun.uploadMbps, ping: lastRun.pingMs, source: lastRun.source, isp: lastRun.isp, ts: lastRun.ts, label: timeAgo(lastRun.ts) }
+      : null;
 
-  if (phase === 'done' && result) {
     return (
-      <Card padding="p-4">
-        <div className="grid grid-cols-3 gap-2 text-center">
-          <div>
-            <div className="text-[10px] uppercase tracking-wider text-zinc-500">Down</div>
-            <div className="font-mono text-[16px] text-emerald-300 mt-1">{result.downloadMbps.toFixed(1)}</div>
-            <div className="text-[10px] text-zinc-500">Mbps avg</div>
+      <>
+        <Card padding="p-4">
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-zinc-500">Down</div>
+              <div className={`font-mono text-[16px] mt-1 ${showing ? 'text-emerald-300' : 'text-zinc-600'}`}>{showing ? showing.down.toFixed(1) : '—'}</div>
+              <div className="text-[10px] text-zinc-500">Mbps{phase === 'done' ? ' avg' : ''}</div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-zinc-500">Up</div>
+              <div className={`font-mono text-[16px] mt-1 ${showing ? 'text-cyan-300' : 'text-zinc-600'}`}>{showing ? showing.up.toFixed(1) : '—'}</div>
+              <div className="text-[10px] text-zinc-500">Mbps{phase === 'done' ? ' avg' : ''}</div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-zinc-500">Ping</div>
+              <div className={`font-mono text-[16px] mt-1 ${showing ? 'text-zinc-100' : 'text-zinc-600'}`}>{showing ? showing.ping.toFixed(0) : '—'}</div>
+              <div className="text-[10px] text-zinc-500">ms</div>
+            </div>
           </div>
-          <div>
-            <div className="text-[10px] uppercase tracking-wider text-zinc-500">Up</div>
-            <div className="font-mono text-[16px] text-cyan-300 mt-1">{result.uploadMbps.toFixed(1)}</div>
-            <div className="text-[10px] text-zinc-500">Mbps avg</div>
+
+          {phase === 'done' && (downSamples.length > 0 || upSamples.length > 0) && (
+            <div className="mt-3"><SpeedTestGraph down={downSamples} up={upSamples} /></div>
+          )}
+
+          <Button
+            variant="primary" size="md" icon="Gauge"
+            className="w-full mt-3"
+            onClick={start}
+          >
+            {phase === 'done' ? 'Run again' : 'ISP speed test'}
+          </Button>
+
+          <div className="flex items-center justify-between gap-2 mt-2 text-[10px]">
+            <span className="text-zinc-500 truncate">
+              {showing
+                ? <>last run · <span className="font-mono">{showing.label}</span>{showing.isp && showing.source !== 'synthetic' ? <> · <span className="font-mono">{showing.isp}</span></> : null}{showing.source === 'synthetic' ? <span className="text-amber-300/80"> · synthetic</span> : null}</>
+                : 'no history · auto runs at 12:00 / 00:00'}
+            </span>
+            <button onClick={() => setHistoryOpen(true)} className="text-cyan-300 hover:text-cyan-200 inline-flex items-center gap-1 shrink-0">
+              History <Icon name="ArrowRight" size={9} />
+            </button>
           </div>
-          <div>
-            <div className="text-[10px] uppercase tracking-wider text-zinc-500">Ping</div>
-            <div className="font-mono text-[16px] text-zinc-100 mt-1">{result.pingMs.toFixed(0)}</div>
-            <div className="text-[10px] text-zinc-500">ms</div>
-          </div>
-        </div>
-        {(downSamples.length > 0 || upSamples.length > 0) && (
-          <div className="mt-3"><SpeedTestGraph down={downSamples} up={upSamples} /></div>
-        )}
-        <div className="flex items-center justify-between gap-2 mt-3">
-          {result.source === 'synthetic'
-            ? <span className="text-[10px] text-amber-300/80">dev mode — synthetic</span>
-            : result.isp ? <span className="text-[10px] text-zinc-500 font-mono truncate">{result.isp}</span> : <span />}
-          <Button variant="ghost" size="sm" icon="RotateCw" onClick={start}>Run again</Button>
-        </div>
-      </Card>
+        </Card>
+        <SpeedTestHistoryModal open={historyOpen} onClose={() => setHistoryOpen(false)} />
+      </>
     );
   }
 
@@ -573,6 +603,159 @@ function SpeedTestCard() {
         </div>
       </div>
     </Card>
+  );
+}
+
+function SpeedTestHistoryModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [runs, setRuns] = useState<HistoryRun[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    setLoading(true);
+    api.get<{ runs: HistoryRun[] }>('/api/probes/speedtest/history?limit=100')
+      .then(r => setRuns(r.runs))
+      .catch(() => setRuns([]))
+      .finally(() => setLoading(false));
+  }, [open]);
+
+  // Stats over the window.
+  const stats = useMemo(() => {
+    if (runs.length === 0) return null;
+    const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+    return {
+      avgDown: avg(runs.map(r => r.downloadMbps)),
+      avgUp:   avg(runs.map(r => r.uploadMbps)),
+      avgPing: avg(runs.map(r => r.pingMs)),
+      minDown: Math.min(...runs.map(r => r.downloadMbps)),
+      maxDown: Math.max(...runs.map(r => r.downloadMbps)),
+      minPing: Math.min(...runs.map(r => r.pingMs)),
+      maxPing: Math.max(...runs.map(r => r.pingMs)),
+      scheduled: runs.filter(r => r.trigger === 'scheduled').length,
+      manual:    runs.filter(r => r.trigger === 'manual').length,
+    };
+  }, [runs]);
+
+  return (
+    <Modal open={open} onClose={onClose} title="Speed test history" subtitle="Auto-runs at 00:00 + 12:00 daily; manual runs from the rail" size="lg">
+      {loading && runs.length === 0 ? (
+        <div className="text-[12px] text-zinc-500 text-center py-8">loading…</div>
+      ) : runs.length === 0 ? (
+        <div className="text-[12px] text-zinc-500 text-center py-8">no runs recorded yet — click <span className="font-mono text-zinc-300">ISP speed test</span> to do the first one</div>
+      ) : (
+        <>
+          {stats && (
+            <div className="grid grid-cols-3 gap-3 mb-4">
+              <div className="rounded-md bg-zinc-900/40 border border-zinc-800/60 p-3">
+                <div className="text-[10px] uppercase tracking-wider text-zinc-500">Avg download</div>
+                <div className="font-mono text-[18px] text-emerald-300 mt-1">{stats.avgDown.toFixed(1)}<span className="text-[11px] text-zinc-500 ml-1">Mbps</span></div>
+                <div className="text-[10px] text-zinc-500 mt-1 font-mono">{stats.minDown.toFixed(0)}–{stats.maxDown.toFixed(0)} range</div>
+              </div>
+              <div className="rounded-md bg-zinc-900/40 border border-zinc-800/60 p-3">
+                <div className="text-[10px] uppercase tracking-wider text-zinc-500">Avg upload</div>
+                <div className="font-mono text-[18px] text-cyan-300 mt-1">{stats.avgUp.toFixed(1)}<span className="text-[11px] text-zinc-500 ml-1">Mbps</span></div>
+                <div className="text-[10px] text-zinc-500 mt-1 font-mono">{stats.scheduled} scheduled · {stats.manual} manual</div>
+              </div>
+              <div className="rounded-md bg-zinc-900/40 border border-zinc-800/60 p-3">
+                <div className="text-[10px] uppercase tracking-wider text-zinc-500">Avg ping</div>
+                <div className="font-mono text-[18px] text-zinc-100 mt-1">{stats.avgPing.toFixed(0)}<span className="text-[11px] text-zinc-500 ml-1">ms</span></div>
+                <div className="text-[10px] text-zinc-500 mt-1 font-mono">{stats.minPing.toFixed(0)}–{stats.maxPing.toFixed(0)} range</div>
+              </div>
+            </div>
+          )}
+
+          <SpeedTestHistoryGraph runs={runs} />
+
+          <div className="mt-4 max-h-[280px] overflow-auto">
+            <table className="w-full text-[12px]">
+              <thead className="sticky top-0 bg-zinc-950">
+                <tr className="text-left text-[10px] uppercase tracking-[0.08em] text-zinc-500 border-b border-zinc-800/70">
+                  <th className="font-medium py-2 pl-1">When</th>
+                  <th className="font-medium py-2 text-right">Down</th>
+                  <th className="font-medium py-2 text-right">Up</th>
+                  <th className="font-medium py-2 text-right">Ping</th>
+                  <th className="font-medium py-2 pl-2">Source</th>
+                  <th className="font-medium py-2 pl-2">Trigger</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-800/60">
+                {runs.map(r => (
+                  <tr key={r.id} className="hover:bg-zinc-900/30">
+                    <td className="py-2 pl-1 font-mono text-zinc-400" title={new Date(r.ts).toISOString()}>{new Date(r.ts).toLocaleString()}</td>
+                    <td className="py-2 text-right font-mono text-emerald-300">{r.downloadMbps.toFixed(1)}</td>
+                    <td className="py-2 text-right font-mono text-cyan-300">{r.uploadMbps.toFixed(1)}</td>
+                    <td className="py-2 text-right font-mono text-zinc-100">{r.pingMs.toFixed(0)}</td>
+                    <td className="py-2 pl-2">
+                      <Badge variant={r.source === 'ookla' ? 'success' : 'warn'} size="sm">{r.source}</Badge>
+                    </td>
+                    <td className="py-2 pl-2">
+                      <Badge variant={r.trigger === 'scheduled' ? 'info' : 'neutral'} size="sm">{r.trigger}</Badge>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
+/**
+ * Time-series chart of historical download/upload across all runs.
+ * Newest run on the right. Two lines (DL emerald, UL cyan) + faint
+ * loss-style markers where ping spiked past 80ms.
+ */
+function SpeedTestHistoryGraph({ runs }: { runs: HistoryRun[] }) {
+  if (runs.length < 2) {
+    return <div className="text-[11px] text-zinc-500 text-center py-3">need ≥ 2 runs to chart trend</div>;
+  }
+  // Oldest → newest for left-to-right plot.
+  const data = [...runs].reverse();
+  const W = 800, H = 180, PAD_L = 38, PAD_R = 16, PAD_T = 14, PAD_B = 24;
+  const plotW = W - PAD_L - PAD_R, plotH = H - PAD_T - PAD_B;
+  const maxRate = Math.max(1, ...data.map(r => Math.max(r.downloadMbps, r.uploadMbps))) * 1.1;
+  const x = (i: number) => PAD_L + (i / Math.max(1, data.length - 1)) * plotW;
+  const y = (v: number) => PAD_T + plotH - (v / maxRate) * plotH;
+
+  const dlLine = data.map((r, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(r.downloadMbps).toFixed(1)}`).join('');
+  const ulLine = data.map((r, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(r.uploadMbps).toFixed(1)}`).join('');
+
+  return (
+    <div className="rounded-md bg-zinc-950/50 border border-zinc-800/60 p-3">
+      <div className="flex items-center justify-between mb-2 text-[10px]">
+        <span className="text-zinc-500">Trend · {data.length} run{data.length === 1 ? '' : 's'}</span>
+        <span className="inline-flex items-center gap-3">
+          <span className="inline-flex items-center gap-1 text-zinc-400"><span className="w-2 h-2 rounded-sm bg-emerald-400" />Download</span>
+          <span className="inline-flex items-center gap-1 text-zinc-400"><span className="w-2 h-2 rounded-sm bg-cyan-400" />Upload</span>
+          <span className="inline-flex items-center gap-1 text-zinc-400"><span className="w-2 h-2 rounded-sm bg-rose-400" />Ping &gt; 80ms</span>
+        </span>
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full block" style={{ height: 180 }} preserveAspectRatio="none">
+        {[0, 0.5, 1].map(p => (
+          <line key={p} x1={PAD_L} x2={W - PAD_R} y1={PAD_T + plotH * (1 - p)} y2={PAD_T + plotH * (1 - p)} stroke="rgba(63,63,70,0.4)" strokeDasharray="2 4" vectorEffect="non-scaling-stroke" />
+        ))}
+        {[0, 0.5, 1].map(p => (
+          <text key={p} x={PAD_L - 6} y={PAD_T + plotH * (1 - p) + 4} fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="10" textAnchor="end">
+            {(maxRate * p).toFixed(0)}
+          </text>
+        ))}
+        <text x={PAD_L - 6} y={PAD_T - 4} fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="10" textAnchor="end">Mbps</text>
+        {/* Ping-spike markers */}
+        {data.map((r, i) => r.pingMs > 80 ? (
+          <line key={`p${i}`} x1={x(i)} y1={PAD_T} x2={x(i)} y2={PAD_T + plotH} stroke="#fb7185" strokeOpacity="0.25" strokeWidth="2" vectorEffect="non-scaling-stroke" />
+        ) : null)}
+        <path d={dlLine} fill="none" stroke="#34d399" strokeWidth="1.4" vectorEffect="non-scaling-stroke" />
+        <path d={ulLine} fill="none" stroke="#22d3ee" strokeWidth="1.4" vectorEffect="non-scaling-stroke" />
+        {/* End-dots so the latest reading is obvious */}
+        <circle cx={x(data.length - 1)} cy={y(data[data.length - 1]!.downloadMbps)} r="3" fill="#34d399" />
+        <circle cx={x(data.length - 1)} cy={y(data[data.length - 1]!.uploadMbps)}   r="3" fill="#22d3ee" />
+        {/* X-axis: oldest/newest only */}
+        <text x={PAD_L} y={H - 8} fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="10" textAnchor="start">{timeAgo(data[0]!.ts)}</text>
+        <text x={W - PAD_R} y={H - 8} fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="10" textAnchor="end">now</text>
+      </svg>
+    </div>
   );
 }
 
