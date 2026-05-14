@@ -805,10 +805,44 @@ function ThroughputChart({ series, live, range }: { series: { activity: boolean;
   });
   if (cur) latSegments.push(cur);
 
+  // Hover-tooltip state. Bucket index under the cursor + screen coords.
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const [hover, setHover] = useState<{ idx: number; sx: number; sy: number } | null>(null);
+
+  const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    const svg = e.currentTarget;
+    const rect = svg.getBoundingClientRect();
+    if (rect.width === 0) return;
+    // Translate cursor x → bucket index based on visible plot area.
+    const plotPxL = (PAD_L / W) * rect.width;
+    const plotPxW = (plotW / W) * rect.width;
+    const rel = (e.clientX - rect.left - plotPxL) / plotPxW;
+    const idx = Math.round(rel * (N - 1));
+    if (idx < 0 || idx >= N) { setHover(null); return; }
+    setHover({ idx, sx: e.clientX, sy: e.clientY });
+  };
+
+  const cursorX = hover ? x(hover.idx) : 0;
+  const cursorBucket = hover ? data[hover.idx] : null;
+
+  // Range bucket → time-ago string.
+  const ago = (idx: number) => {
+    const minutesPerBucket = range === '1h' ? 1 : range === '1D' ? 15 : range === '1W' ? 60 : 360;
+    const m = Math.round((N - 1 - idx) * minutesPerBucket);
+    if (m === 0) return 'now';
+    if (m < 60)  return `${m}m ago`;
+    if (m < 1440) return `${(m / 60).toFixed(1)}h ago`;
+    return `${(m / 1440).toFixed(1)}d ago`;
+  };
+
   return (
-    <div className="p-5 h-full flex flex-col">
+    <div className="p-5 h-full flex flex-col" ref={wrapperRef}>
       <div className="relative flex-1 min-h-[260px]">
-        <svg viewBox={`0 0 ${W} ${H}`} className="absolute inset-0 w-full h-full block" preserveAspectRatio="none">
+        <svg
+          viewBox={`0 0 ${W} ${H}`} className="absolute inset-0 w-full h-full block" preserveAspectRatio="none"
+          onMouseMove={onMove}
+          onMouseLeave={() => setHover(null)}
+        >
           <defs>
             <linearGradient id="actFill" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="#22d3ee" stopOpacity="0.35" />
@@ -819,7 +853,6 @@ function ThroughputChart({ series, live, range }: { series: { activity: boolean;
             <line key={p} x1={PAD_L} x2={W - PAD_R} y1={PAD_T + plotH * (1 - p)} y2={PAD_T + plotH * (1 - p)}
                   stroke="rgba(63,63,70,0.4)" strokeDasharray="2 4" vectorEffect="non-scaling-stroke" />
           ))}
-          {/* Left axis: Mbps (activity). Hidden if no real data. */}
           {hasAnyActivity && (
             <>
               {[0, 0.5, 1].map(p => (
@@ -831,7 +864,6 @@ function ThroughputChart({ series, live, range }: { series: { activity: boolean;
               <text x={PAD_L - 6} y={PAD_T - 6} fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="10" textAnchor="end">Mbps</text>
             </>
           )}
-          {/* Right axis: ms (latency). Hidden if no real data. */}
           {hasAnyLatency && (
             <>
               {[0, 0.5, 1].map(p => (
@@ -861,12 +893,63 @@ function ThroughputChart({ series, live, range }: { series: { activity: boolean;
             <text key={i} x={PAD_L + (i / (arr.length - 1)) * plotW} y={H - 10}
                   fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="11" textAnchor="middle">{l}</text>
           ))}
+
+          {/* Hover cursor — vertical line + highlight dots */}
+          {hover && cursorBucket && (
+            <>
+              <line x1={cursorX} y1={PAD_T} x2={cursorX} y2={PAD_T + plotH}
+                    stroke="rgba(212,212,216,0.4)" strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />
+              {hasAnyActivity && series.activity && (
+                <circle cx={cursorX} cy={yA(cursorBucket.activity)} r="3.5" fill="#22d3ee" stroke="#09090b" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
+              )}
+              {hasAnyLatency && series.latency && cursorBucket.latency !== null && (
+                <circle cx={cursorX} cy={yL(cursorBucket.latency)} r="3.5" fill="#fbbf24" stroke="#09090b" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
+              )}
+            </>
+          )}
         </svg>
+
         {!hasAnyActivity && !hasAnyLatency && (
           <div className="absolute inset-0 flex items-center justify-center text-[12px] text-zinc-500 font-mono">
             no throughput / latency samples yet
           </div>
         )}
+
+        {/* Tooltip — positioned at the cursor in screen coordinates so it doesn't get squashed by preserveAspectRatio="none" */}
+        {hover && cursorBucket && wrapperRef.current && (() => {
+          const rect = wrapperRef.current.getBoundingClientRect();
+          const offset = 14;
+          // Flip the tooltip to the left if it would overflow the card on the right.
+          const flipLeft = hover.sx + 180 + offset > rect.right;
+          const left = flipLeft ? hover.sx - rect.left - 180 - offset : hover.sx - rect.left + offset;
+          const top  = Math.max(8, Math.min(hover.sy - rect.top - 30, rect.height - 80));
+          return (
+            <div
+              className="absolute pointer-events-none z-10 px-3 py-2 rounded-md glass-strong shadow-2xl text-[11px] whitespace-nowrap"
+              style={{ left, top, width: 180 }}
+            >
+              <div className="text-zinc-500 font-mono mb-1">{ago(hover.idx)}</div>
+              {hasAnyActivity && (
+                <div className="flex items-center justify-between gap-3">
+                  <span className="inline-flex items-center gap-1.5 text-zinc-300"><span className="w-2 h-2 rounded-sm bg-cyan-400" />Activity</span>
+                  <span className="font-mono text-zinc-100">{cursorBucket.activity.toFixed(2)} Mbps</span>
+                </div>
+              )}
+              {hasAnyLatency && cursorBucket.latency !== null && (
+                <div className="flex items-center justify-between gap-3 mt-1">
+                  <span className="inline-flex items-center gap-1.5 text-zinc-300"><span className="w-2 h-2 rounded-sm bg-amber-400" />Latency</span>
+                  <span className="font-mono text-zinc-100">{cursorBucket.latency.toFixed(0)} ms</span>
+                </div>
+              )}
+              {hasAnyLatency && cursorBucket.loss !== null && cursorBucket.loss > 0 && (
+                <div className="flex items-center justify-between gap-3 mt-1">
+                  <span className="inline-flex items-center gap-1.5 text-zinc-300"><span className="w-2 h-2 rounded-sm bg-rose-400" />Loss</span>
+                  <span className="font-mono text-rose-300">{cursorBucket.loss.toFixed(1)} %</span>
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </div>
     </div>
   );
@@ -1252,43 +1335,77 @@ function QualityScatterLive() {
 }
 
 function QualityScatterRaw({ points }: { points: Array<{ id: string; lat: number; loss: number; color: string; size: number }> }) {
-  // Auto-scale X to the actual latency range. Pick a sensible upper bound:
-  // at least 100ms (so the "<30ms = excellent" zone is meaningful) and at
-  // least 1.4× the slowest point. Keeps three traffic-light bands proportional.
   const observedMax = points.reduce((m, p) => Math.max(m, p.lat), 0);
   const maxLat = Math.max(100, Math.ceil(observedMax * 1.4 / 25) * 25);
-  const W = 1000, H = 260, PAD_L = 40, PAD_R = 28, PAD_T = 20, PAD_B = 32;
+  const W = 1000, H = 280, PAD_L = 44, PAD_R = 28, PAD_T = 28, PAD_B = 36;
   const plotW = W - PAD_L - PAD_R, plotH = H - PAD_T - PAD_B;
   const maxLoss = 5;
   const x = (lat: number) => PAD_L + (lat / maxLat) * plotW;
   const y = (loss: number) => PAD_T + plotH - (loss / maxLoss) * plotH;
 
-  // X tick step rounded to a sensible interval.
   const targetTicks = 6;
   const rawStep = maxLat / targetTicks;
   const niceStep = [10, 20, 25, 50, 100, 200].find(s => s >= rawStep) ?? rawStep;
   const xTicks: number[] = [];
   for (let v = 0; v <= maxLat; v += niceStep) xTicks.push(v);
 
-  // Spread overlapping labels — group points by bucket position and stack their labels.
-  const labelOffsets = computeLabelOffsets(points, p => x(p.lat));
+  // ─── Smart label placement ──────────────────────────────────────
+  // Each point can place its label in 8 candidate positions around the dot
+  // (E / NE / N / NW / W / SW / S / SE). Pick the first non-colliding slot.
+  // If all 8 collide, fall back to E and accept overlap rather than hide.
+  const LABEL_PADDING_X = 8;
+  const LABEL_PADDING_Y = 4;
+  const placements: Array<{ tx: number; ty: number; anchor: 'start' | 'end' | 'middle' }> = [];
+  // Used rectangles (in viewBox coords) to test for collisions.
+  const used: Array<{ x1: number; y1: number; x2: number; y2: number }> = [];
+  // Rough char width @ 11px monospace ≈ 6.6 viewBox-units.
+  const approxTextWidth = (s: string) => s.length * 6.6;
+  // Add point exclusion zones first so labels never sit on top of any dot.
+  for (const p of points) {
+    const cx = x(p.lat), cy = y(p.loss);
+    used.push({ x1: cx - p.size - 2, y1: cy - p.size - 2, x2: cx + p.size + 2, y2: cy + p.size + 2 });
+  }
+  for (const p of points) {
+    const cx = x(p.lat), cy = y(p.loss);
+    const tw = approxTextWidth(p.id);
+    const th = 12; // ~font-size + padding
+    const r = p.size + 4;
+    // 8 candidate slots, ordered by preference (right first, then up-right, etc.)
+    const candidates: Array<{ tx: number; ty: number; anchor: 'start' | 'end' | 'middle'; rect: { x1: number; y1: number; x2: number; y2: number } }> = [
+      { tx: cx + r + LABEL_PADDING_X, ty: cy + 4, anchor: 'start',  rect: { x1: cx + r,            y1: cy - th/2,      x2: cx + r + tw + LABEL_PADDING_X,         y2: cy + th/2 } },
+      { tx: cx + r + LABEL_PADDING_X, ty: cy - r - LABEL_PADDING_Y, anchor: 'start',  rect: { x1: cx + r, y1: cy - r - th, x2: cx + r + tw, y2: cy - r } },
+      { tx: cx,                       ty: cy - r - LABEL_PADDING_Y - 2, anchor: 'middle', rect: { x1: cx - tw/2, y1: cy - r - th - 2, x2: cx + tw/2, y2: cy - r - 2 } },
+      { tx: cx - r - LABEL_PADDING_X, ty: cy - r - LABEL_PADDING_Y, anchor: 'end',    rect: { x1: cx - r - tw, y1: cy - r - th, x2: cx - r, y2: cy - r } },
+      { tx: cx - r - LABEL_PADDING_X, ty: cy + 4, anchor: 'end',    rect: { x1: cx - r - tw, y1: cy - th/2, x2: cx - r, y2: cy + th/2 } },
+      { tx: cx - r - LABEL_PADDING_X, ty: cy + r + th, anchor: 'end',    rect: { x1: cx - r - tw, y1: cy + r, x2: cx - r, y2: cy + r + th } },
+      { tx: cx,                       ty: cy + r + th + 2, anchor: 'middle', rect: { x1: cx - tw/2, y1: cy + r + 2, x2: cx + tw/2, y2: cy + r + th + 2 } },
+      { tx: cx + r + LABEL_PADDING_X, ty: cy + r + th, anchor: 'start',  rect: { x1: cx + r, y1: cy + r, x2: cx + r + tw, y2: cy + r + th } },
+    ];
+    const overlaps = (a: { x1: number; y1: number; x2: number; y2: number }, b: typeof a) =>
+      !(a.x2 < b.x1 || a.x1 > b.x2 || a.y2 < b.y1 || a.y1 > b.y2);
+    // Also reject candidates that escape the plot area.
+    const inBounds = (r: { x1: number; y1: number; x2: number; y2: number }) =>
+      r.x1 >= PAD_L - 8 && r.x2 <= W - PAD_R + 8 && r.y1 >= PAD_T - 8 && r.y2 <= PAD_T + plotH + 8;
+    const chosen = candidates.find(c => inBounds(c.rect) && !used.some(u => overlaps(c.rect, u))) ?? candidates[0]!;
+    used.push(chosen.rect);
+    placements.push({ tx: chosen.tx, ty: chosen.ty, anchor: chosen.anchor });
+  }
 
   return (
-    <div className="relative" style={{ height: 260 }}>
+    <div className="relative" style={{ height: 280 }}>
       {points.length === 0 ? (
         <div className="absolute inset-0 flex items-center justify-center text-[12px] text-zinc-500 font-mono">probing targets…</div>
       ) : (
         <svg viewBox={`0 0 ${W} ${H}`} className="absolute inset-0 w-full h-full block" preserveAspectRatio="none">
-          {/* Traffic-light zones — <30ms green, 30–100ms amber, >100ms rose */}
-          <rect x={PAD_L}                       y={PAD_T} width={Math.max(0, x(Math.min(30, maxLat)) - PAD_L)} height={plotH} fill="#34d39911" />
-          {maxLat > 30 && <rect x={x(30)}        y={PAD_T} width={x(Math.min(100, maxLat)) - x(30)}            height={plotH} fill="#fbbf2411" />}
-          {maxLat > 100 && <rect x={x(100)}      y={PAD_T} width={(W - PAD_R) - x(100)}                          height={plotH} fill="#fb718511" />}
+          {/* Traffic-light zones */}
+          <rect x={PAD_L} y={PAD_T} width={Math.max(0, x(Math.min(30, maxLat)) - PAD_L)} height={plotH} fill="#34d39911" />
+          {maxLat > 30  && <rect x={x(30)}  y={PAD_T} width={x(Math.min(100, maxLat)) - x(30)} height={plotH} fill="#fbbf2411" />}
+          {maxLat > 100 && <rect x={x(100)} y={PAD_T} width={(W - PAD_R) - x(100)}            height={plotH} fill="#fb718511" />}
 
-          {/* X grid + labels */}
           {xTicks.map(v => (
             <g key={v}>
               <line x1={x(v)} y1={PAD_T} x2={x(v)} y2={PAD_T + plotH} stroke="rgba(63,63,70,0.25)" vectorEffect="non-scaling-stroke" />
-              <text x={x(v)} y={PAD_T + plotH + 16} textAnchor="middle" fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="11">{v}</text>
+              <text x={x(v)} y={PAD_T + plotH + 18} textAnchor="middle" fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="11">{v}</text>
             </g>
           ))}
           {[0, 1, 2, 3, 4, 5].map(v => (
@@ -1297,45 +1414,33 @@ function QualityScatterRaw({ points }: { points: Array<{ id: string; lat: number
               <text x={PAD_L - 6} y={y(v) + 4} textAnchor="end" fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="11">{v}%</text>
             </g>
           ))}
-          <text x={(PAD_L + W - PAD_R) / 2} y={H - 6} textAnchor="middle" fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="11">latency · ms</text>
-          <text x={PAD_L - 6} y={PAD_T - 4} textAnchor="end" fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="11">loss</text>
+          <text x={(PAD_L + W - PAD_R) / 2} y={H - 8} textAnchor="middle" fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="11">latency · ms</text>
+          <text x={PAD_L - 6} y={PAD_T - 8} textAnchor="end" fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="11">loss</text>
 
-          {points.map((p, i) => (
-            <g key={p.id}>
-              <circle cx={x(p.lat)} cy={y(p.loss)} r={p.size + 4} fill={p.color} opacity="0.15" />
-              <circle cx={x(p.lat)} cy={y(p.loss)} r={p.size}      fill={p.color} opacity="0.9" />
-              <text x={x(p.lat) + p.size + 6} y={y(p.loss) + 3 + labelOffsets[i]!}
-                    fill="#d4d4d8" fontFamily="JetBrains Mono, monospace" fontSize="11">{p.id}</text>
-            </g>
-          ))}
+          {points.map((p, i) => {
+            const place = placements[i]!;
+            return (
+              <g key={p.id}>
+                {/* connector line for off-axis labels so the reader can tell which dot the label belongs to */}
+                <line
+                  x1={x(p.lat)} y1={y(p.loss)}
+                  x2={place.anchor === 'middle' ? place.tx : place.tx + (place.anchor === 'start' ? -2 : 2)}
+                  y2={place.ty - 3}
+                  stroke="rgba(212,212,216,0.18)" strokeWidth="0.6" vectorEffect="non-scaling-stroke"
+                />
+                <circle cx={x(p.lat)} cy={y(p.loss)} r={p.size + 4} fill={p.color} opacity="0.15" />
+                <circle cx={x(p.lat)} cy={y(p.loss)} r={p.size}      fill={p.color} opacity="0.9" />
+                <text x={place.tx} y={place.ty} textAnchor={place.anchor}
+                      fill="#e4e4e7" fontFamily="JetBrains Mono, monospace" fontSize="11" stroke="#09090b" strokeWidth="3" paintOrder="stroke">
+                  {p.id}
+                </text>
+              </g>
+            );
+          })}
         </svg>
       )}
     </div>
   );
-}
-
-/**
- * When several scatter dots cluster within ~50px, stack their labels by
- * giving them alternating Y offsets so the text doesn't overlap.
- */
-function computeLabelOffsets<T>(items: T[], xOf: (item: T) => number): number[] {
-  const out: number[] = new Array(items.length).fill(0);
-  // Walk in X order so we can detect proximity by previous element.
-  const indexed = items.map((item, i) => ({ i, x: xOf(item) }));
-  indexed.sort((a, b) => a.x - b.x);
-  let lastX = -Infinity;
-  let stackedAbove = false;
-  for (const { i, x } of indexed) {
-    if (Math.abs(x - lastX) < 50) {
-      out[i] = stackedAbove ? 12 : -12;
-      stackedAbove = !stackedAbove;
-    } else {
-      out[i] = 0;
-      stackedAbove = false;
-    }
-    lastX = x;
-  }
-  return out;
 }
 
 const APP_DATA = [
