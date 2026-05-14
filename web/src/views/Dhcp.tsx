@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Card, Button, IconButton, Modal, Ring, Icon, KV } from '../components/primitives';
+import { Card, Button, IconButton, Modal, Ring, Icon, KV, Field, Input, Badge } from '../components/primitives';
 import { api } from '../api/client';
 
 interface Lease { hostname: string; ip: string; mac: string; expiry: string; }
 interface Reservation { id: number; hostname: string; mac: string; ip: string; lease: string; }
 interface Scope { rangeStart: string; rangeEnd: string; leaseTime: string; gateway: string; dnsServers: string; domain: string; }
+interface DiscoveredHost { ip: string; mac: string | null; hostname: string | null; source: 'lease' | 'reservation' | 'static'; responded: boolean; }
+interface ScanResult { scanned: number; responded: number; hosts: DiscoveredHost[]; cidr: string; durationMs: number; }
 
 export function Dhcp() {
   const [leases, setLeases] = useState<Lease[]>([]);
@@ -12,6 +14,11 @@ export function Dhcp() {
   const [scope, setScope] = useState<Scope | null>(null);
   const [converting, setConverting] = useState<Lease | null>(null);
   const [filter, setFilter] = useState('');
+  const [scanning, setScanning] = useState(false);
+  const [scanResult, setScanResult] = useState<ScanResult | null>(null);
+  const [reserveDraft, setReserveDraft] = useState<DiscoveredHost | null>(null);
+  const [reserveHostname, setReserveHostname] = useState('');
+  const [reserveMac, setReserveMac] = useState('');
 
   const reload = () => {
     api.get<{ leases: Lease[] }>('/api/dhcp/leases').then(r => setLeases(r.leases)).catch(() => {});
@@ -23,6 +30,42 @@ export function Dhcp() {
 
   const filtered = leases.filter(l => !filter || l.hostname.toLowerCase().includes(filter.toLowerCase()) || l.ip.includes(filter));
   const poolCount = scope ? ipsBetween(scope.rangeStart, scope.rangeEnd) : 151;
+
+  const runScan = async () => {
+    setScanning(true);
+    setScanResult(null);
+    try {
+      const r = await api.post<ScanResult>('/api/dhcp/scan', {});
+      setScanResult(r);
+    } catch (err: any) {
+      alert(err?.message ?? 'scan failed');
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const openReserve = (h: DiscoveredHost) => {
+    setReserveDraft(h);
+    setReserveHostname(h.hostname ?? `static-${h.ip.split('.').pop()}`);
+    setReserveMac(h.mac ?? '');
+  };
+
+  const confirmReserve = async () => {
+    if (!reserveDraft) return;
+    if (!/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(reserveMac)) { alert('Enter a valid MAC (xx:xx:xx:xx:xx:xx)'); return; }
+    try {
+      await api.post('/api/dhcp/reservations', {
+        hostname: reserveHostname,
+        mac: reserveMac.toLowerCase(),
+        ip: reserveDraft.ip,
+        lease: '24h',
+      });
+      setReserveDraft(null);
+      // Update the scan list so the row reflects "reservation".
+      setScanResult(s => s ? { ...s, hosts: s.hosts.map(h => h.ip === reserveDraft.ip ? { ...h, source: 'reservation', hostname: reserveHostname, mac: reserveMac.toLowerCase() } : h) } : s);
+      reload();
+    } catch (err: any) { alert(err?.message ?? 'failed'); }
+  };
 
   const confirmConvert = async () => {
     if (!converting) return;
@@ -93,6 +136,68 @@ export function Dhcp() {
         </Card>
       </div>
 
+      <Card title="Network Scan" subtitle={scanResult ? `${scanResult.responded} of ${scanResult.scanned} addresses responded · ${scanResult.cidr} · ${(scanResult.durationMs / 1000).toFixed(1)}s` : 'Find devices on the LAN that have static IPs (don’t appear in DHCP)'}
+            action={
+              <Button variant="primary" size="sm" icon={scanning ? 'Loader2' : 'Radar'} onClick={runScan} disabled={scanning}
+                      className={scanning ? '[&_svg]:animate-spin' : ''}>
+                {scanning ? 'Scanning…' : (scanResult ? 'Rescan' : 'Scan LAN')}
+              </Button>
+            }>
+        {!scanResult && !scanning && (
+          <p className="text-[12px] text-zinc-500 leading-relaxed">
+            Pings every address in the LAN subnet, then reads the kernel ARP table to discover MACs.
+            Addresses that respond but don't appear in <code className="font-mono text-cyan-300">dnsmasq.leases</code> are flagged as <strong>static</strong> — those are the devices configured outside DHCP.
+            Use <strong>Reserve</strong> on a static row to pin it.
+          </p>
+        )}
+        {scanning && (
+          <div className="flex items-center gap-3 py-2">
+            <span className="shimmer h-2 rounded flex-1" />
+            <span className="text-[11px] font-mono text-zinc-500">probing /24…</span>
+          </div>
+        )}
+        {scanResult && (
+          <div className="overflow-x-auto -mx-5">
+            <table className="w-full text-[12.5px]">
+              <thead>
+                <tr className="text-left text-[10.5px] uppercase tracking-[0.08em] text-zinc-500 border-b border-zinc-800/70">
+                  <th className="font-medium py-2.5 px-5">IP</th>
+                  <th className="font-medium py-2.5 px-3">MAC</th>
+                  <th className="font-medium py-2.5 px-3">Hostname</th>
+                  <th className="font-medium py-2.5 px-3">Source</th>
+                  <th className="font-medium py-2.5 px-5 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-800/60">
+                {scanResult.hosts.map(h => (
+                  <tr key={h.ip} className="hover:bg-zinc-900/30 group">
+                    <td className="py-3 px-5 font-mono text-cyan-300">{h.ip}</td>
+                    <td className="py-3 px-3 font-mono text-zinc-400">{h.mac ?? <span className="text-zinc-700">— (ARP miss)</span>}</td>
+                    <td className="py-3 px-3 text-zinc-300">{h.hostname ?? <span className="text-zinc-700">—</span>}</td>
+                    <td className="py-3 px-3">
+                      {h.source === 'static'      ? <Badge variant="warn"    size="sm" icon="AlertTriangle">static (not in DHCP)</Badge>
+                       : h.source === 'lease'       ? <Badge variant="success" size="sm" icon="Plug">DHCP lease</Badge>
+                       :                              <Badge variant="info"    size="sm" icon="Pin">reservation</Badge>}
+                    </td>
+                    <td className="py-3 px-5 text-right">
+                      {h.source === 'static' && h.mac && (
+                        <Button variant="ghost" size="sm" icon="Pin" onClick={() => openReserve(h)}>Reserve</Button>
+                      )}
+                      {h.source === 'static' && !h.mac && (
+                        <span className="text-[11px] text-zinc-600">ARP missing</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {scanResult.hosts.length === 0 && (
+                  <tr><td colSpan={5} className="py-8 text-center text-[12px] text-zinc-600">Nothing responded.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
       <Card title="Active DHCP Leases" subtitle={`${leases.length} clients connected to 10.0.0.0/24`}
             action={
               <div className="flex items-center gap-2">
@@ -146,6 +251,37 @@ export function Dhcp() {
           </table>
         </div>
       </Card>
+
+      <Modal
+        open={!!reserveDraft}
+        onClose={() => setReserveDraft(null)}
+        title="Reserve discovered host"
+        subtitle="Pin this MAC to this IP — written to /etc/dnsmasq.d/static.conf"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setReserveDraft(null)}>Cancel</Button>
+            <Button variant="primary" icon="Pin" onClick={confirmReserve}>Confirm reservation</Button>
+          </>
+        }>
+        {reserveDraft && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <KV k="IP"     v={reserveDraft.ip} mono />
+              <KV k="Source" v={reserveDraft.source} />
+            </div>
+            <Field label="Hostname">
+              <Input value={reserveHostname} onChange={(e) => setReserveHostname(e.target.value)} />
+            </Field>
+            <Field label="MAC address" hint={reserveDraft.mac ? 'Pre-filled from ARP — edit only if wrong.' : 'ARP didn’t see this host. Enter manually.'}>
+              <Input mono value={reserveMac} onChange={(e) => setReserveMac(e.target.value)} placeholder="aa:bb:cc:dd:ee:ff" />
+            </Field>
+            <div className="mt-2 p-3 rounded-lg bg-zinc-950/60 border border-zinc-800/60 text-[11.5px]">
+              <div className="text-zinc-500 mb-1">// dnsmasq.d/static.conf</div>
+              <div className="text-cyan-300 font-mono">dhcp-host={reserveMac || '<MAC>'},{reserveHostname || '<host>'},{reserveDraft.ip},24h</div>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       <Modal
         open={!!converting}

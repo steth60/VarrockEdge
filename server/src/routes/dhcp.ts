@@ -4,6 +4,7 @@ import { db } from '../db/client';
 import { dhcpReservations, dhcpScope } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { parseLeases, reload } from '../system/dnsmasq';
+import { scanLan } from '../system/scan';
 
 const router = Router();
 
@@ -75,6 +76,16 @@ router.patch('/scope', async (req, res) => {
   }
   await reload();
   res.json({ scope: db.select().from(dhcpScope).get() });
+});
+
+router.post('/scan', async (req, res) => {
+  const cidr = typeof req.body?.cidr === 'string' ? req.body.cidr : undefined;
+  try {
+    const r = await scanLan({ cidr });
+    res.json(r);
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message ?? 'scan failed' });
+  }
 });
 
 export default router;
