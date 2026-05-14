@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { NavLink } from 'react-router-dom';
 import { Icon } from './primitives';
 import type { Tweaks } from '../hooks/useTweaks';
@@ -42,52 +43,47 @@ export function Sidebar({ tweaks, user, onLogout }: { tweaks: Tweaks; user: Auth
 
   return (
     <aside className="w-[62px] shrink-0 border-r border-zinc-800/70 bg-zinc-950/60 backdrop-blur flex flex-col items-center py-3 gap-2">
-      {/* Brand glyph */}
-      <button
-        className="relative w-9 h-9 rounded-lg flex items-center justify-center group shrink-0"
-        style={{
-          background: `linear-gradient(135deg, ${accent.hex}, rgba(99,102,241,0.7))`,
-          boxShadow: `0 0 14px ${accent.soft}`,
-        }}
-        title="VarrokEdge — edge-01 · 0.9.2"
-      >
-        <Icon name="Hexagon" size={18} color="rgba(9,9,11,0.95)" strokeWidth={2.5} />
-        <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-400 ring-2 ring-zinc-950" />
-        <Tooltip label="VarrokEdge" hint="edge-01 · 0.9.2" />
-      </button>
+      <Tipped label="VarrokEdge" hint={`${user?.name ?? 'edge'} · 0.9.2`}>
+        <button
+          className="relative w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
+          style={{
+            background: `linear-gradient(135deg, ${accent.hex}, rgba(99,102,241,0.7))`,
+            boxShadow: `0 0 14px ${accent.soft}`,
+          }}
+        >
+          <Icon name="Hexagon" size={18} color="rgba(9,9,11,0.95)" strokeWidth={2.5} />
+          <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-400 ring-2 ring-zinc-950" />
+        </button>
+      </Tipped>
 
       <div className="w-7 h-px bg-zinc-800/70 my-1" />
 
-      {/* Nav */}
-      <nav className="flex-1 flex flex-col items-center gap-1 w-full overflow-y-auto no-scrollbar">
+      <nav className="flex-1 flex flex-col items-center gap-1 w-full">
         {SECTIONS.map((section, idx) => (
           <div key={section} className="flex flex-col items-center gap-1 w-full">
             {idx > 0 && <div className="w-7 h-px bg-zinc-800/70 my-1" />}
             {NAV.filter(n => n.section === section).map(item => (
-              <NavLink
-                key={item.id}
-                to={item.to}
-                className="group relative"
-              >
-                {({ isActive }) => (
-                  <div
-                    className={`relative w-9 h-9 rounded-lg flex items-center justify-center transition-colors ${
-                      isActive
-                        ? 'bg-zinc-800/70 text-zinc-100'
-                        : 'text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800/40'
-                    }`}
-                  >
-                    {isActive && (
-                      <span
-                        className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-r"
-                        style={{ background: accent.hex }}
-                      />
-                    )}
-                    <Icon name={item.icon} size={16} strokeWidth={isActive ? 2 : 1.75} />
-                    <Tooltip label={item.label} hint={'hint' in item ? (item as any).hint : undefined} />
-                  </div>
-                )}
-              </NavLink>
+              <Tipped key={item.id} label={item.label} hint={'hint' in item ? (item as any).hint : undefined}>
+                <NavLink to={item.to}>
+                  {({ isActive }) => (
+                    <div
+                      className={`relative w-9 h-9 rounded-lg flex items-center justify-center transition-colors ${
+                        isActive
+                          ? 'bg-zinc-800/70 text-zinc-100'
+                          : 'text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800/40'
+                      }`}
+                    >
+                      {isActive && (
+                        <span
+                          className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-r"
+                          style={{ background: accent.hex }}
+                        />
+                      )}
+                      <Icon name={item.icon} size={16} strokeWidth={isActive ? 2 : 1.75} />
+                    </div>
+                  )}
+                </NavLink>
+              </Tipped>
             ))}
           </div>
         ))}
@@ -95,48 +91,76 @@ export function Sidebar({ tweaks, user, onLogout }: { tweaks: Tweaks; user: Auth
 
       <div className="w-7 h-px bg-zinc-800/70 my-1" />
 
-      {/* Bottom: Docs, Alerts, Profile */}
       <div className="flex flex-col items-center gap-1 shrink-0">
-        <a
-          href="/docs"
-          target="_blank"
-          rel="noopener"
-          className="group relative w-9 h-9 rounded-lg flex items-center justify-center text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800/40 transition-colors"
-        >
-          <Icon name="BookOpen" size={16} />
-          <Tooltip label="Documentation" hint="opens in new tab" />
-        </a>
-        <NavLink to="/logs" className="group relative w-9 h-9 rounded-lg flex items-center justify-center text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800/40 transition-colors">
-          <Icon name="Bell" size={16} />
-          {openThreats.count > 0 && (
-            <span className={`absolute top-1 right-1 min-w-3.5 h-3.5 px-1 rounded-full bg-rose-500 text-[8.5px] font-mono text-zinc-950 flex items-center justify-center ${openThreats.critical > 0 ? 'animate-pulse' : ''}`}>
-              {openThreats.count > 99 ? '99+' : openThreats.count}
+        <Tipped label="Documentation" hint="opens in new tab">
+          <a
+            href="/docs"
+            target="_blank"
+            rel="noopener"
+            className="w-9 h-9 rounded-lg flex items-center justify-center text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800/40 transition-colors"
+          >
+            <Icon name="BookOpen" size={16} />
+          </a>
+        </Tipped>
+        <Tipped label="Alerts" hint={openThreats.count === 0 ? 'no open threats' : `${openThreats.count} open${openThreats.critical ? ` · ${openThreats.critical} critical` : ''}`}>
+          <NavLink to="/logs" className="relative w-9 h-9 rounded-lg flex items-center justify-center text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800/40 transition-colors">
+            <Icon name="Bell" size={16} />
+            {openThreats.count > 0 && (
+              <span className={`absolute top-1 right-1 min-w-3.5 h-3.5 px-1 rounded-full bg-rose-500 text-[8.5px] font-mono text-zinc-950 flex items-center justify-center ${openThreats.critical > 0 ? 'animate-pulse' : ''}`}>
+                {openThreats.count > 99 ? '99+' : openThreats.count}
+              </span>
+            )}
+          </NavLink>
+        </Tipped>
+        <Tipped label={user?.name ?? 'Account'} hint="click to sign out">
+          <button onClick={onLogout} className="w-9 h-9 rounded-lg flex items-center justify-center">
+            <span className="w-7 h-7 rounded-full bg-gradient-to-br from-cyan-400 to-indigo-500 text-[10px] font-semibold text-zinc-950 flex items-center justify-center">
+              {initials}
             </span>
-          )}
-          <Tooltip label="Alerts" hint={openThreats.count === 0 ? 'no open threats' : `${openThreats.count} open${openThreats.critical ? ` · ${openThreats.critical} critical` : ''}`} />
-        </NavLink>
-        <button
-          onClick={onLogout}
-          className="group relative w-9 h-9 rounded-lg flex items-center justify-center transition-colors"
-          title="Sign out"
-        >
-          <span className="w-7 h-7 rounded-full bg-gradient-to-br from-cyan-400 to-indigo-500 text-[10px] font-semibold text-zinc-950 flex items-center justify-center">
-            {initials}
-          </span>
-          <Tooltip label={user?.name ?? 'Account'} hint="click to sign out" />
-        </button>
+          </button>
+        </Tipped>
       </div>
     </aside>
   );
 }
 
-function Tooltip({ label, hint }: { label: string; hint?: string }) {
+/**
+ * Wraps any sidebar item and renders a tooltip to document.body via portal
+ * on hover. Portal avoids being clipped by ancestor `overflow-hidden`
+ * (which we have on the app shell so the body doesn't scroll).
+ */
+function Tipped({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const hideTimer = useRef<number | null>(null);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+
+  const show = () => {
+    if (hideTimer.current) { window.clearTimeout(hideTimer.current); hideTimer.current = null; }
+    const el = ref.current?.firstElementChild as HTMLElement | null | undefined;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setPos({ top: r.top + r.height / 2, left: r.right + 8 });
+  };
+  const hide = () => {
+    hideTimer.current = window.setTimeout(() => setPos(null), 60);
+  };
+
+  useEffect(() => () => { if (hideTimer.current) window.clearTimeout(hideTimer.current); }, []);
+
   return (
-    <span className="absolute left-full ml-3 top-1/2 -translate-y-1/2 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity z-50 whitespace-nowrap">
-      <span className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded-md glass-strong shadow-xl text-[11.5px] text-zinc-100">
-        <span>{label}</span>
-        {hint && <code className="font-mono text-[9.5px] text-zinc-500 px-1 py-0.5 rounded bg-zinc-900/80 border border-zinc-800/70">{hint}</code>}
-      </span>
-    </span>
+    <div ref={ref} onMouseEnter={show} onMouseLeave={hide} onFocus={show} onBlur={hide}>
+      {children}
+      {pos && createPortal(
+        <span
+          className="pointer-events-none fixed z-[100] inline-flex items-center gap-2 px-2.5 py-1.5 rounded-md glass-strong shadow-2xl text-[11.5px] text-zinc-100 whitespace-nowrap -translate-y-1/2"
+          style={{ top: pos.top, left: pos.left }}
+          role="tooltip"
+        >
+          <span>{label}</span>
+          {hint && <code className="font-mono text-[9.5px] text-zinc-500 px-1 py-0.5 rounded bg-zinc-900/80 border border-zinc-800/70">{hint}</code>}
+        </span>,
+        document.body
+      )}
+    </div>
   );
 }
