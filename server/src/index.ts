@@ -19,6 +19,8 @@ import userRoutes from './routes/users';
 import settingsRoutes from './routes/settings';
 import logsRoutes from './routes/logs';
 import topologyRoutes from './routes/topology';
+import securityRoutes from './routes/security';
+import { startDetector } from './system/detector';
 import { ensureServerAsync } from './system/wireguard';
 
 function refuseUnsafeBind(host: string) {
@@ -45,6 +47,7 @@ async function main() {
 
   runMigrations();
   await ensureServerAsync().catch(err => log.warn({ err }, 'wg init skipped'));
+  startDetector();
 
   const app = express();
   app.disable('x-powered-by');
@@ -66,6 +69,7 @@ async function main() {
   app.use('/api/settings', requireAuth, settingsRoutes);
   app.use('/api/logs',     requireAuth, logsRoutes);
   app.use('/api/topology', requireAuth, topologyRoutes);
+  app.use('/api/security', requireAuth, securityRoutes);
 
   // Static SPA
   if (fs.existsSync(config.publicDir)) {

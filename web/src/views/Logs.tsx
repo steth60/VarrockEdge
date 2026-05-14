@@ -2,7 +2,24 @@ import { useEffect, useMemo, useState } from 'react';
 import { Card, Badge, Button, IconButton, KPICard, Sparkline, Icon, Select, Modal, KV, LegendDot, ToggleSwitch, Input, LOG_LEVEL_COLORS } from '../components/primitives';
 import { api } from '../api/client';
 
-interface Threat { id: number; severity: 'critical'|'high'|'medium'|'low'; kind: string; src: string; dst: string; count: number; first: string; last: string; status: string; country: string; desc: string }
+interface Threat {
+  id: number;
+  ruleId: string;
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  kind: string;
+  src: string;
+  dst: string;
+  count: number;
+  firstSeenAt: number;
+  lastSeenAt: number;
+  status: string;
+  country: string | null;
+  desc: string | null;
+}
+
+interface Rule { id: string; name: string; category: string; enabled: boolean; severity: string; threshold: string; action: string; hits: number; builtin: boolean }
+interface Ban { ip: string; jail: string; bannedAt: number | null; expiresAt: number | null; attempts: number | null; reason: string | null }
+interface Bucket { hour: number; critical: number; high: number; medium: number; low: number }
 
 const SEV_META: Record<string, { variant: any; dot: string }> = {
   critical: { variant: 'danger', dot: 'bg-rose-400 dot-pulse' },
@@ -18,31 +35,54 @@ const STATUS_META: Record<string, { variant: any; label: string }> = {
   acked:        { variant: 'neutral', label: 'Acknowledged' },
 };
 
-const THREATS_SEED: Threat[] = [
-  { id: 1, severity: 'critical', kind: 'Brute force',         src: '185.220.101.42', dst: 'eth0:22',     count: 142,  first: '14:18:02', last: '14:21:18', status: 'banned',     country: 'RU', desc: 'SSH password auth attempts from Tor exit node' },
-  { id: 2, severity: 'high',     kind: 'Port scan',           src: '212.83.40.6',    dst: 'eth0:*',      count: 1024, first: '13:48:11', last: '13:49:02', status: 'banned',     country: 'FR', desc: 'TCP SYN sweep across 1024 ports in 51s' },
-  { id: 3, severity: 'high',     kind: 'DNS amplification',   src: '94.115.66.12',   dst: 'eth0:53',     count: 86,   first: '12:11:33', last: '14:02:51', status: 'rate-limit', country: 'UK', desc: 'ANY queries with spoofed source — recursive denial in effect' },
-  { id: 4, severity: 'medium',   kind: 'Anomalous egress',    src: '10.0.0.74',      dst: 'tor exit',    count: 4,    first: '13:22:08', last: '14:11:01', status: 'flagged',    country: 'LAN',desc: 'Workstation initiated outbound connections to known Tor relays' },
-  { id: 5, severity: 'medium',   kind: 'Failed WG handshake', src: '88.214.10.92',   dst: 'eth0:51820',  count: 18,   first: '11:51:14', last: '14:02:55', status: 'monitoring', country: 'DE', desc: 'Repeated handshakes with invalid public key' },
-  { id: 6, severity: 'low',      kind: 'New device on LAN',   src: 'bc:24:11:0e:91:4a',dst: '10.0.0.118',count: 1,    first: '10:05:11', last: '10:05:11', status: 'acked',      country: 'LAN',desc: 'Previously unseen MAC joined DHCP scope' },
-];
+function fmtTime(ms: number): string {
+  const d = new Date(ms);
+  return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
+}
 
 export function Logs() {
   const [tab, setTab] = useState<'threats' | 'live' | 'rules' | 'banlist'>('threats');
   const [filter, setFilter] = useState('all');
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Threat | null>(null);
+  const [threats, setThreats] = useState<Threat[]>([]);
+  const [buckets, setBuckets] = useState<Bucket[]>([]);
 
-  const threats = THREATS_SEED.filter(t => (filter === 'all' || t.severity === filter) && (!search || JSON.stringify(t).toLowerCase().includes(search.toLowerCase())));
+  const reloadThreats = () => {
+    api.get<{ threats: Threat[] }>('/api/security/threats').then(r => setThreats(r.threats)).catch(() => {});
+    api.get<{ buckets: Bucket[] }>('/api/security/timeline').then(r => setBuckets(r.buckets)).catch(() => {});
+  };
+
+  useEffect(() => {
+    if (tab !== 'threats') return;
+    reloadThreats();
+    const t = setInterval(reloadThreats, 10_000);
+    return () => clearInterval(t);
+  }, [tab]);
+
+  const filtered = threats.filter(t =>
+    (filter === 'all' || t.severity === filter) &&
+    (!search || `${t.kind} ${t.src} ${t.dst} ${t.desc ?? ''}`.toLowerCase().includes(search.toLowerCase()))
+  );
+
+  const ackOrBan = async (t: Threat, kind: 'ack' | 'ban') => {
+    if (kind === 'ack') {
+      await api.patch(`/api/security/threats/${t.id}`, { status: 'acked' }).catch(() => {});
+    } else {
+      await api.post(`/api/security/threats/${t.id}/ban`).catch(() => {});
+    }
+    setSelected(null);
+    reloadThreats();
+  };
 
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <KPICard label="Open threats"   value={THREATS_SEED.filter(t => t.status !== 'acked').length} icon="AlertTriangle" tone="danger" trend={{ dir: 'up', value: '2 in 1h' }} />
-        <KPICard label="Banned IPs (24h)" value={47} icon="ShieldX" tone="neutral" />
-        <KPICard label="Events / min"   value={184} icon="Activity" tone="accent"
-          spark={<Sparkline data={Array.from({length: 40}, (_, i) => 180 + Math.sin(i * 0.5) * 25 + (i % 5) * 4)} color="#22d3ee" />} />
-        <KPICard label="Detection rate" value={99.2} unit="%" icon="Radar" tone="success" />
+        <KPICard label="Open threats"   value={threats.filter(t => t.status !== 'acked').length} icon="AlertTriangle" tone="danger" />
+        <KPICard label="Critical (24h)" value={threats.filter(t => t.severity === 'critical').length} icon="ShieldX" tone="neutral" />
+        <KPICard label="Events / hour"  value={buckets[23]?.critical ?? 0 + (buckets[23]?.high ?? 0) + (buckets[23]?.medium ?? 0) + (buckets[23]?.low ?? 0)} icon="Activity" tone="accent"
+          spark={<Sparkline data={buckets.map(b => b.critical + b.high + b.medium + b.low)} color="#22d3ee" />} />
+        <KPICard label="Rules enabled"  value={'—'} icon="Radar" tone="success" />
       </div>
 
       <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -72,7 +112,7 @@ export function Logs() {
                         className={`px-2.5 h-7 text-[11.5px] rounded-sm font-medium transition-colors ${filter === s ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-500 hover:text-zinc-200'}`}>{s}</button>
               ))}
             </div>
-            <Button variant="secondary" size="sm" icon="FileDown">Export</Button>
+            <Button variant="ghost" size="sm" icon="RefreshCw" onClick={reloadThreats}>Refresh</Button>
           </div>
         )}
       </div>
@@ -80,9 +120,9 @@ export function Logs() {
       {tab === 'threats' && (
         <>
           <Card title="Event timeline" subtitle="Last 24 hours · grouped by hour" action={<Badge variant="info" size="sm" icon="Radar">live</Badge>}>
-            <ThreatTimeline />
+            <ThreatTimeline buckets={buckets} />
           </Card>
-          <Card title="Detected threats" subtitle={`${threats.length} of ${THREATS_SEED.length} matching`}>
+          <Card title="Detected threats" subtitle={`${filtered.length} of ${threats.length} matching · live from detector`}>
             <table className="w-full text-[12.5px]">
               <thead>
                 <tr className="text-left text-[10.5px] uppercase tracking-[0.08em] text-zinc-500 border-b border-zinc-800/70">
@@ -97,31 +137,33 @@ export function Logs() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-800/60">
-                {threats.map(t => (
-                  <tr key={t.id} onClick={() => setSelected(t)} className="hover:bg-zinc-900/30 cursor-pointer">
-                    <td className="py-3">
-                      <div className="flex items-center gap-2">
-                        <span className={`w-2 h-2 rounded-full ${SEV_META[t.severity].dot}`} />
-                        <span className="text-[10.5px] uppercase tracking-wider text-zinc-400">{t.severity}</span>
-                      </div>
-                    </td>
-                    <td className="py-3">
-                      <div className="text-zinc-100">{t.kind}</div>
-                      <div className="text-[11px] text-zinc-500 mt-0.5 truncate max-w-[260px]">{t.desc}</div>
-                    </td>
-                    <td className="py-3">
-                      <div className="flex items-center gap-1.5">
-                        <code className="font-mono text-cyan-300">{t.src}</code>
-                        <span className="text-[10px] font-mono text-zinc-500">{t.country}</span>
-                      </div>
-                    </td>
-                    <td className="py-3 font-mono text-zinc-300">{t.dst}</td>
-                    <td className="py-3 text-right font-mono text-zinc-400">{t.count.toLocaleString()}</td>
-                    <td className="py-3 font-mono text-zinc-500 text-[11.5px]">{t.first}</td>
-                    <td className="py-3 font-mono text-zinc-500 text-[11.5px]">{t.last}</td>
-                    <td className="py-3"><Badge variant={STATUS_META[t.status].variant} size="sm">{STATUS_META[t.status].label}</Badge></td>
-                  </tr>
-                ))}
+                {filtered.map(t => {
+                  const sev = SEV_META[t.severity] ?? SEV_META.low;
+                  const status = STATUS_META[t.status] ?? STATUS_META.monitoring;
+                  return (
+                    <tr key={t.id} onClick={() => setSelected(t)} className="hover:bg-zinc-900/30 cursor-pointer">
+                      <td className="py-3">
+                        <div className="flex items-center gap-2">
+                          <span className={`w-2 h-2 rounded-full ${sev.dot}`} />
+                          <span className="text-[10.5px] uppercase tracking-wider text-zinc-400">{t.severity}</span>
+                        </div>
+                      </td>
+                      <td className="py-3">
+                        <div className="text-zinc-100">{t.kind}</div>
+                        {t.desc && <div className="text-[11px] text-zinc-500 mt-0.5 truncate max-w-[260px]">{t.desc}</div>}
+                      </td>
+                      <td className="py-3"><code className="font-mono text-cyan-300">{t.src}</code></td>
+                      <td className="py-3 font-mono text-zinc-300">{t.dst}</td>
+                      <td className="py-3 text-right font-mono text-zinc-400">{t.count.toLocaleString()}</td>
+                      <td className="py-3 font-mono text-zinc-500 text-[11.5px]">{fmtTime(t.firstSeenAt)}</td>
+                      <td className="py-3 font-mono text-zinc-500 text-[11.5px]">{fmtTime(t.lastSeenAt)}</td>
+                      <td className="py-3"><Badge variant={status.variant} size="sm">{status.label}</Badge></td>
+                    </tr>
+                  );
+                })}
+                {filtered.length === 0 && (
+                  <tr><td colSpan={8} className="py-8 text-center text-[12px] text-zinc-600">No threats matching. Detector is running — events will appear here as the journal generates matches.</td></tr>
+                )}
               </tbody>
             </table>
           </Card>
@@ -134,35 +176,37 @@ export function Logs() {
 
       <Modal open={!!selected} onClose={() => setSelected(null)} size="lg"
              title={selected?.kind} subtitle={selected ? `Threat #${String(selected.id).padStart(4, '0')} · ${selected.severity.toUpperCase()}` : ''}
-             footer={
+             footer={selected && (
                <>
                  <Button variant="ghost" onClick={() => setSelected(null)}>Close</Button>
-                 <Button variant="secondary" icon="Eye">Watch list</Button>
-                 <Button variant="danger" icon="ShieldX">Permanently ban</Button>
+                 <Button variant="secondary" icon="Eye" onClick={() => ackOrBan(selected, 'ack')}>Acknowledge</Button>
+                 <Button variant="danger" icon="ShieldX" onClick={() => ackOrBan(selected, 'ban')}>Ban IP</Button>
                </>
-             }>
+             )}>
         {selected && (
           <div className="space-y-4">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <KV k="Source IP"   v={selected.src} mono />
-              <KV k="Origin"      v={selected.country} />
+              <KV k="Source"      v={selected.src} mono />
               <KV k="Target"      v={selected.dst} mono />
               <KV k="Event count" v={selected.count.toLocaleString()} mono />
-              <KV k="First seen"  v={selected.first} mono />
-              <KV k="Last seen"   v={selected.last} mono />
-              <KV k="Status"      v={STATUS_META[selected.status].label} />
-              <KV k="Action"      v={selected.status === 'banned' ? 'fail2ban -A' : 'monitored'} mono />
+              <KV k="Rule"        v={selected.ruleId} mono />
+              <KV k="First seen"  v={fmtTime(selected.firstSeenAt)} mono />
+              <KV k="Last seen"   v={fmtTime(selected.lastSeenAt)} mono />
+              <KV k="Status"      v={(STATUS_META[selected.status] ?? STATUS_META.monitoring).label} />
+              <KV k="Severity"    v={selected.severity} />
             </div>
-            <div>
-              <div className="text-[11px] uppercase tracking-[0.08em] text-zinc-500 mb-2">Description</div>
-              <p className="text-[12.5px] text-zinc-300 leading-relaxed">{selected.desc}</p>
-            </div>
+            {selected.desc && (
+              <div>
+                <div className="text-[11px] uppercase tracking-[0.08em] text-zinc-500 mb-2">Description</div>
+                <p className="text-[12.5px] text-zinc-300 leading-relaxed">{selected.desc}</p>
+              </div>
+            )}
             <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-400/30 flex gap-2 text-[12px] text-amber-200">
               <Icon name="AlertCircle" size={14} className="text-amber-300 shrink-0 mt-0.5" />
               <div>
-                <strong>Recommended action:</strong> {selected.status === 'banned'
-                  ? `IP currently banned. Auto-unban in 7 days. Promote to permanent ban?`
-                  : 'Add this source to the watch list, or escalate to a permanent ban.'}
+                <strong>Action:</strong> {selected.status === 'banned'
+                  ? 'IP is currently in a fail2ban jail.'
+                  : 'Acknowledge to dismiss without action, or ban to send to fail2ban.'}
               </div>
             </div>
           </div>
@@ -172,26 +216,19 @@ export function Logs() {
   );
 }
 
-function ThreatTimeline() {
-  const buckets = useMemo(() => Array.from({ length: 24 }, (_, h) => {
-    const seed = (h * 9301 + 49297) % 233280;
-    const r = seed / 233280;
-    return {
-      hour: h,
-      critical: h === 14 ? 3 : Math.floor(r * 2),
-      high:     h === 13 || h === 14 ? 2 + Math.floor(r * 3) : Math.floor(r * 2),
-      medium:   Math.floor(r * 5),
-      low:      Math.floor(r * 8) + 2,
-    };
-  }), []);
-  const max = Math.max(...buckets.map(b => b.critical + b.high + b.medium + b.low));
+function ThreatTimeline({ buckets }: { buckets: Bucket[] }) {
+  const max = useMemo(() => Math.max(1, ...buckets.map(b => b.critical + b.high + b.medium + b.low)), [buckets]);
+  const hourLabel = (h: number) => {
+    const d = new Date(h * 3_600_000);
+    return `${d.getHours().toString().padStart(2, '0')}:00`;
+  };
   return (
     <div>
       <div className="flex items-end gap-1 h-32">
         {buckets.map(b => {
           const total = b.critical + b.high + b.medium + b.low;
           return (
-            <div key={b.hour} className="flex-1 flex flex-col-reverse gap-px group" title={`${b.hour}:00 — ${total} events`}>
+            <div key={b.hour} className="flex-1 flex flex-col-reverse gap-px group" title={`${hourLabel(b.hour)} — ${total} events`}>
               <div style={{ height: `${(b.low / max) * 100}%`,      background: 'rgba(56,189,248,0.55)' }} />
               <div style={{ height: `${(b.medium / max) * 100}%`,   background: 'rgba(251,191,36,0.7)' }} />
               <div style={{ height: `${(b.high / max) * 100}%`,     background: 'rgba(251,146,60,0.85)' }} />
@@ -201,7 +238,7 @@ function ThreatTimeline() {
         })}
       </div>
       <div className="flex justify-between mt-2 font-mono text-[10px] text-zinc-500">
-        {[0, 4, 8, 12, 16, 20, 24].map(h => <span key={h}>{String(h).padStart(2, '0')}:00</span>)}
+        {buckets.length > 0 && [0, 4, 8, 12, 16, 20, 23].map(i => buckets[i] && <span key={i}>{hourLabel(buckets[i]!.hour)}</span>)}
       </div>
       <div className="mt-3 flex flex-wrap gap-3 text-[11px]">
         <LegendDot color="#fb7185" label="Critical" />
@@ -276,100 +313,104 @@ function LiveLogs() {
 }
 
 function DetectionRules() {
-  const [rules, setRules] = useState([
-    { id: 'ssh-bf',     name: 'SSH brute force',           category: 'Authentication', enabled: true,  severity: 'critical', threshold: '6 attempts / 60s', action: 'ban 7d',         hits: 142 },
-    { id: 'port-scan',  name: 'TCP/UDP port scan',         category: 'Reconnaissance', enabled: true,  severity: 'high',     threshold: '40 ports / 30s',   action: 'ban 24h',        hits: 1024 },
-    { id: 'dns-amp',    name: 'DNS amplification',         category: 'DNS abuse',      enabled: true,  severity: 'high',     threshold: 'ANY queries from non-LAN', action: 'rate-limit', hits: 86 },
-    { id: 'http-flood', name: 'HTTP flood',                category: 'DDoS',           enabled: true,  severity: 'high',     threshold: '500 req/s sustained', action: 'rate-limit + ban', hits: 0 },
-    { id: 'tor-egress', name: 'Outbound to Tor relay',     category: 'Egress',         enabled: true,  severity: 'medium',   threshold: 'any match',         action: 'alert + flag',   hits: 4 },
-    { id: 'new-mac',    name: 'New device on LAN',         category: 'LAN visibility', enabled: true,  severity: 'low',      threshold: 'first DHCP lease',  action: 'notify',          hits: 1 },
-  ]);
+  const [rules, setRules] = useState<Rule[]>([]);
+  const reload = () => api.get<{ rules: Rule[] }>('/api/security/rules').then(r => setRules(r.rules)).catch(() => {});
+  useEffect(() => { reload(); }, []);
+  const toggle = async (r: Rule) => {
+    await api.patch(`/api/security/rules/${r.id}`, { enabled: !r.enabled }).catch(() => {});
+    reload();
+  };
   return (
-    <>
-      <Card title="Detection rules" subtitle={`${rules.filter(r => r.enabled).length} of ${rules.length} enabled`}
-            action={<Button variant="primary" size="sm" icon="Plus">New rule</Button>}>
-        <table className="w-full text-[12.5px]">
-          <thead><tr className="text-left text-[10.5px] uppercase tracking-[0.08em] text-zinc-500 border-b border-zinc-800/70">
-            <th className="font-medium py-2.5 w-10"></th>
-            <th className="font-medium py-2.5">Rule</th>
-            <th className="font-medium py-2.5">Category</th>
-            <th className="font-medium py-2.5">Severity</th>
-            <th className="font-medium py-2.5">Threshold</th>
-            <th className="font-medium py-2.5">Action</th>
-            <th className="font-medium py-2.5 text-right">Hits (24h)</th>
-          </tr></thead>
-          <tbody className="divide-y divide-zinc-800/60">
-            {rules.map(r => (
-              <tr key={r.id} className="hover:bg-zinc-900/30 group">
-                <td className="py-3"><ToggleSwitch value={r.enabled} onChange={(v) => setRules(rules.map(x => x.id === r.id ? { ...x, enabled: v } : x))} /></td>
-                <td className="py-3 text-zinc-100">{r.name}</td>
-                <td className="py-3 text-zinc-400">{r.category}</td>
-                <td className="py-3"><Badge variant={SEV_META[r.severity].variant} size="sm">{r.severity}</Badge></td>
-                <td className="py-3 font-mono text-zinc-400 text-[11.5px]">{r.threshold}</td>
-                <td className="py-3 font-mono text-cyan-300 text-[11.5px]">{r.action}</td>
-                <td className="py-3 text-right font-mono text-zinc-400">{r.hits.toLocaleString()}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Card>
-      <Card title="Threat intelligence feeds" subtitle="External IP reputation lists">
-        <div className="space-y-2">
-          {[
-            { name: 'Emerging Threats — compromised IPs', count: '54,221',  updated: '12 min ago', enabled: true },
-            { name: 'AbuseIPDB — confidence ≥ 75',        count: '184,442', updated: '38 min ago', enabled: true },
-            { name: 'Tor exit node list',                 count: '1,062',   updated: '1 hour ago', enabled: true },
-            { name: 'Spamhaus DROP list',                 count: '894',     updated: '4 hours ago',enabled: true },
-          ].map(f => (
-            <div key={f.name} className="flex items-center gap-3 p-3 rounded-lg bg-zinc-900/40 border border-zinc-800/60">
-              <ToggleSwitch value={f.enabled} onChange={() => {}} />
-              <div className="flex-1 min-w-0">
-                <div className="text-[12.5px] text-zinc-100">{f.name}</div>
-                <div className="text-[11px] text-zinc-500 font-mono mt-0.5">{f.count} entries · updated {f.updated}</div>
-              </div>
-              <IconButton name="RefreshCw" label="Refresh now" size="sm" />
-            </div>
+    <Card title="Detection rules" subtitle={`${rules.filter(r => r.enabled).length} of ${rules.length} enabled · changes persist to DB`}
+          action={<Button variant="primary" size="sm" icon="Plus">New rule</Button>}>
+      <table className="w-full text-[12.5px]">
+        <thead><tr className="text-left text-[10.5px] uppercase tracking-[0.08em] text-zinc-500 border-b border-zinc-800/70">
+          <th className="font-medium py-2.5 w-10"></th>
+          <th className="font-medium py-2.5">Rule</th>
+          <th className="font-medium py-2.5">Category</th>
+          <th className="font-medium py-2.5">Severity</th>
+          <th className="font-medium py-2.5">Threshold</th>
+          <th className="font-medium py-2.5">Action</th>
+          <th className="font-medium py-2.5 text-right">Hits</th>
+        </tr></thead>
+        <tbody className="divide-y divide-zinc-800/60">
+          {rules.map(r => (
+            <tr key={r.id} className="hover:bg-zinc-900/30 group">
+              <td className="py-3"><ToggleSwitch value={r.enabled} onChange={() => toggle(r)} /></td>
+              <td className="py-3 text-zinc-100">{r.name}</td>
+              <td className="py-3 text-zinc-400">{r.category}</td>
+              <td className="py-3"><Badge variant={SEV_META[r.severity]?.variant ?? 'neutral'} size="sm">{r.severity}</Badge></td>
+              <td className="py-3 font-mono text-zinc-400 text-[11.5px]">{r.threshold}</td>
+              <td className="py-3 font-mono text-cyan-300 text-[11.5px]">{r.action}</td>
+              <td className="py-3 text-right font-mono text-zinc-400">{r.hits.toLocaleString()}</td>
+            </tr>
           ))}
-        </div>
-      </Card>
-    </>
+          {rules.length === 0 && <tr><td colSpan={7} className="py-8 text-center text-[12px] text-zinc-600">No rules.</td></tr>}
+        </tbody>
+      </table>
+    </Card>
   );
 }
 
 function BanList() {
-  const banned = [
-    { ip: '185.220.101.42', country: 'RU', reason: 'SSH brute force',    bannedAt: '14:18:02', expires: 'in 6d 22h',  jail: 'sshd',     attempts: 142  },
-    { ip: '212.83.40.6',    country: 'FR', reason: 'Port scan',          bannedAt: '13:48:11', expires: 'in 23h 30m', jail: 'recidive', attempts: 1024 },
-    { ip: '94.115.66.12',   country: 'UK', reason: 'DNS amplification',  bannedAt: '12:11:33', expires: 'in 11h 04m', jail: 'dns-abuse',attempts: 86   },
-  ];
+  const [bans, setBans] = useState<Ban[]>([]);
+  const [newIp, setNewIp] = useState('');
+  const [newJail, setNewJail] = useState('sshd');
+
+  const reload = () => api.get<{ bans: Ban[] }>('/api/security/bans').then(r => setBans(r.bans)).catch(() => {});
+  useEffect(() => { reload(); const t = setInterval(reload, 15_000); return () => clearInterval(t); }, []);
+
+  const add = async () => {
+    if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(newIp)) { alert('Invalid IPv4 address'); return; }
+    try {
+      await api.post('/api/security/bans', { ip: newIp, jail: newJail });
+      setNewIp('');
+      reload();
+    } catch (err: any) { alert(err?.message ?? 'failed'); }
+  };
+  const remove = async (ip: string) => {
+    try { await api.delete(`/api/security/bans/${encodeURIComponent(ip)}`); reload(); }
+    catch (err: any) { alert(err?.message ?? 'failed'); }
+  };
+
   return (
-    <Card title="Block list" subtitle={`${banned.length} active bans · auto-managed by fail2ban + custom rules`}
+    <Card title="Block list" subtitle={`${bans.length} active ban${bans.length === 1 ? '' : 's'} · live from fail2ban-client`}
           action={
             <div className="flex gap-2">
-              <Input mono placeholder="Add IP / CIDR…" className="h-8 w-44" />
-              <Button variant="primary" size="sm" icon="ShieldX">Add ban</Button>
+              <Input mono placeholder="IP / CIDR" className="h-8 w-36" value={newIp} onChange={(e) => setNewIp(e.target.value)} />
+              <Select value={newJail} onChange={(e) => setNewJail(e.target.value)} className="h-8 !text-[11.5px] w-32">
+                <option>sshd</option><option>recidive</option><option>dns-abuse</option>
+              </Select>
+              <Button variant="primary" size="sm" icon="ShieldX" onClick={add}>Add ban</Button>
             </div>
           }>
       <table className="w-full text-[12.5px]">
         <thead><tr className="text-left text-[10.5px] uppercase tracking-[0.08em] text-zinc-500 border-b border-zinc-800/70">
-          <th className="font-medium py-2.5">IP</th><th className="font-medium py-2.5">Origin</th>
-          <th className="font-medium py-2.5">Reason</th><th className="font-medium py-2.5">Jail</th>
+          <th className="font-medium py-2.5">IP</th>
+          <th className="font-medium py-2.5">Jail</th>
+          <th className="font-medium py-2.5">Reason</th>
           <th className="font-medium py-2.5 text-right">Attempts</th>
           <th className="font-medium py-2.5">Banned at</th>
           <th className="font-medium py-2.5">Expires</th>
+          <th className="font-medium py-2.5 text-right"></th>
         </tr></thead>
         <tbody className="divide-y divide-zinc-800/60">
-          {banned.map(b => (
-            <tr key={b.ip} className="hover:bg-zinc-900/30">
+          {bans.map(b => (
+            <tr key={`${b.ip}-${b.jail}`} className="hover:bg-zinc-900/30 group">
               <td className="py-3 font-mono text-rose-300">{b.ip}</td>
-              <td className="py-3 font-mono text-zinc-400">{b.country}</td>
-              <td className="py-3 text-zinc-300">{b.reason}</td>
               <td className="py-3"><Badge variant="neutral" size="sm">{b.jail}</Badge></td>
-              <td className="py-3 text-right font-mono text-zinc-400">{b.attempts.toLocaleString()}</td>
-              <td className="py-3 font-mono text-zinc-500">{b.bannedAt}</td>
-              <td className="py-3 font-mono text-zinc-500">{b.expires}</td>
+              <td className="py-3 text-zinc-300">{b.reason ?? '—'}</td>
+              <td className="py-3 text-right font-mono text-zinc-400">{b.attempts?.toLocaleString() ?? '—'}</td>
+              <td className="py-3 font-mono text-zinc-500">{b.bannedAt ? fmtTime(b.bannedAt) : '—'}</td>
+              <td className="py-3 font-mono text-zinc-500">{b.expiresAt ? new Date(b.expiresAt).toLocaleString() : '—'}</td>
+              <td className="py-3 text-right">
+                <div className="inline-flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <Button variant="ghost" size="sm" icon="Unlock" onClick={() => remove(b.ip)}>Unban</Button>
+                </div>
+              </td>
             </tr>
           ))}
+          {bans.length === 0 && <tr><td colSpan={7} className="py-8 text-center text-[12px] text-zinc-600">No bans active.</td></tr>}
         </tbody>
       </table>
     </Card>

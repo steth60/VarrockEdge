@@ -122,6 +122,41 @@ export const settings = sqliteTable('settings', {
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+export const detectionRules = sqliteTable('detection_rules', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  category: text('category').notNull(),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  severity: text('severity').notNull(),
+  threshold: text('threshold').notNull(),
+  action: text('action').notNull(),
+  hits: integer('hits').notNull().default(0),
+  builtin: integer('builtin', { mode: 'boolean' }).notNull().default(true),
+});
+
+export const threats = sqliteTable('threats', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  ruleId: text('rule_id').notNull(),
+  severity: text('severity').notNull(),
+  kind: text('kind').notNull(),
+  src: text('src').notNull(),
+  dst: text('dst').notNull(),
+  count: integer('count').notNull().default(1),
+  firstSeenAt: integer('first_seen_at').notNull(),  // epoch ms
+  lastSeenAt: integer('last_seen_at').notNull(),    // epoch ms
+  status: text('status').notNull().default('monitoring'), // monitoring|flagged|rate-limit|banned|acked
+  country: text('country'),
+  desc: text('desc'),
+});
+
+export const eventBuckets = sqliteTable('event_buckets', {
+  hour: integer('hour').primaryKey(), // Math.floor(Date.now() / 3_600_000)
+  critical: integer('critical').notNull().default(0),
+  high: integer('high').notNull().default(0),
+  medium: integer('medium').notNull().default(0),
+  low: integer('low').notNull().default(0),
+});
+
 export type User = typeof users.$inferSelect;
 export type DhcpReservation = typeof dhcpReservations.$inferSelect;
 export type DnsRecord = typeof dnsRecords.$inferSelect;
@@ -129,3 +164,6 @@ export type WgPeer = typeof wgPeers.$inferSelect;
 export type FwDnat = typeof fwDnat.$inferSelect;
 export type FwSnat = typeof fwSnat.$inferSelect;
 export type FwRule = typeof fwRules.$inferSelect;
+export type DetectionRule = typeof detectionRules.$inferSelect;
+export type Threat = typeof threats.$inferSelect;
+export type EventBucket = typeof eventBuckets.$inferSelect;
