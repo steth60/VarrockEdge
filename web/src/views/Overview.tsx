@@ -51,7 +51,6 @@ export function Overview() {
         <ApplianceCard sysinfo={sysinfo} peers={peers} threats={threats} leasesCount={leasesCount} />
         <WanCard interfaces={interfaces} live={live} />
         <SpeedTestCard />
-        <PriorityCard />
         <SystemMiniCard live={live} />
       </aside>
 
@@ -671,34 +670,9 @@ function SpeedTestGraph({ down, up }: { down: number[]; up: number[] }) {
   );
 }
 
-function PriorityCard() {
-  const items = [
-    { name: 'VPN tunnels', icon: 'ShieldCheck', active: true },
-    { name: 'Video',       icon: 'Video',       active: true },
-    { name: 'VoIP',        icon: 'Phone',       active: true },
-    { name: 'Gaming',      icon: 'Gamepad2',    active: false },
-    { name: 'Backup',      icon: 'HardDrive',   active: false },
-  ];
-  return (
-    <Card padding="p-4">
-      <div className="flex items-center justify-between mb-3">
-        <div>
-          <div className="text-[11.5px] font-medium text-zinc-200">Traffic prioritization</div>
-          <div className="text-[10.5px] text-zinc-500 mt-0.5">QoS · DSCP marking</div>
-        </div>
-        <button className="text-[11px] text-cyan-300 hover:text-cyan-200 inline-flex items-center gap-1">Manage <Icon name="ArrowRight" size={10} /></button>
-      </div>
-      <div className="grid grid-cols-5 gap-1.5">
-        {items.map(i => (
-          <div key={i.name} title={i.name}
-               className={`aspect-square rounded-md flex items-center justify-center border ${i.active ? 'bg-cyan-400/10 border-cyan-400/30 text-cyan-300' : 'bg-zinc-900/40 border-zinc-800/60 text-zinc-600'}`}>
-            <Icon name={i.icon} size={13} />
-          </div>
-        ))}
-      </div>
-    </Card>
-  );
-}
+// PriorityCard removed: QoS / DSCP marking was never wired to iptables
+// mangle rules or tc, the toggles were decorative, and the "Manage" link
+// went nowhere. If/when real QoS plumbing lands, this returns.
 
 function SystemMiniCard({ live }: { live: Snapshot | null }) {
   const diskUsed  = live?.disk.used ?? 0;
@@ -1181,40 +1155,50 @@ function LatencyHistoryChart() {
     const t = setInterval(load, 30_000);
     return () => clearInterval(t);
   }, []);
-  const W = 1000, H = 140, PAD_L = 32, PAD_R = 16, PAD_T = 10, PAD_B = 18;
+  const W = 1000, H = 180, PAD_L = 38, PAD_R = 18, PAD_T = 12, PAD_B = 24;
   const plotW = W - PAD_L - PAD_R, plotH = H - PAD_T - PAD_B;
   const vals = buckets.map(b => b.avgMs ?? 0);
   const maxLat = Math.max(50, ...vals) * 1.2;
   const x = (i: number) => PAD_L + (i / Math.max(1, buckets.length - 1)) * plotW;
   const y = (v: number) => PAD_T + plotH - (v / maxLat) * plotH;
   const line = buckets.map((b, i) => b.avgMs !== null ? `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(b.avgMs).toFixed(1)}` : '').filter(Boolean).join('');
+  const area = line ? `${line} L${x(buckets.length - 1).toFixed(1)},${PAD_T + plotH} L${x(0).toFixed(1)},${PAD_T + plotH} Z` : '';
+  const noData = buckets.length === 0 || buckets.every(b => b.avgMs === null);
   return (
     <div className="px-5 pb-4">
-      {buckets.every(b => b.avgMs === null) ? (
-        <div className="text-[12px] text-zinc-500 text-center py-6">collecting samples (one every 30s)…</div>
-      ) : (
-        <svg viewBox={`0 0 ${W} ${H}`} className="w-full block" style={{ height: H }}>
-          {[0, 0.5, 1].map(p => (
-            <line key={p} x1={PAD_L} x2={W - PAD_R} y1={PAD_T + plotH * (1 - p)} y2={PAD_T + plotH * (1 - p)} stroke="rgba(63,63,70,0.4)" strokeDasharray="2 4" />
-          ))}
-          {[0, 0.5, 1].map(p => (
-            <text key={p} x={PAD_L - 6} y={PAD_T + plotH * (1 - p) + 3}
-                  fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="9.5" textAnchor="end">
-              {(maxLat * p).toFixed(0)}
-            </text>
-          ))}
-          <text x={PAD_L - 6} y={PAD_T - 2} fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="9" textAnchor="end">ms</text>
-          {/* Loss bars */}
-          {buckets.map((b, i) => b.lossPct && b.lossPct > 0 ? (
-            <rect key={i} x={x(i) - 2} y={PAD_T + plotH - (Math.min(b.lossPct, 100) / 100) * plotH} width="4" height={(Math.min(b.lossPct, 100) / 100) * plotH} fill="#fb7185" opacity="0.5" />
-          ) : null)}
-          <path d={line} fill="none" stroke="#22d3ee" strokeWidth="1.5" />
-          {['60m', '45m', '30m', '15m', 'now'].map((l, i, arr) => (
-            <text key={l} x={PAD_L + (i / (arr.length - 1)) * plotW} y={H - 4}
-                  fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="9.5" textAnchor="middle">{l}</text>
-          ))}
-        </svg>
-      )}
+      <div className="relative" style={{ height: 180 }}>
+        {noData ? (
+          <div className="absolute inset-0 flex items-center justify-center text-[12px] text-zinc-500 font-mono">collecting samples (one every 30s)…</div>
+        ) : (
+          <svg viewBox={`0 0 ${W} ${H}`} className="absolute inset-0 w-full h-full block" preserveAspectRatio="none">
+            <defs>
+              <linearGradient id="latFill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%"  stopColor="#22d3ee" stopOpacity="0.35" />
+                <stop offset="100%" stopColor="#22d3ee" stopOpacity="0" />
+              </linearGradient>
+            </defs>
+            {[0, 0.5, 1].map(p => (
+              <line key={p} x1={PAD_L} x2={W - PAD_R} y1={PAD_T + plotH * (1 - p)} y2={PAD_T + plotH * (1 - p)} stroke="rgba(63,63,70,0.4)" strokeDasharray="2 4" vectorEffect="non-scaling-stroke" />
+            ))}
+            {[0, 0.5, 1].map(p => (
+              <text key={p} x={PAD_L - 6} y={PAD_T + plotH * (1 - p) + 4}
+                    fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="11" textAnchor="end">
+                {(maxLat * p).toFixed(0)}
+              </text>
+            ))}
+            <text x={PAD_L - 6} y={PAD_T - 2} fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="10" textAnchor="end">ms</text>
+            {buckets.map((b, i) => b.lossPct && b.lossPct > 0 ? (
+              <rect key={i} x={x(i) - 2} y={PAD_T + plotH - (Math.min(b.lossPct, 100) / 100) * plotH} width="4" height={(Math.min(b.lossPct, 100) / 100) * plotH} fill="#fb7185" opacity="0.5" />
+            ) : null)}
+            <path d={area} fill="url(#latFill)" />
+            <path d={line} fill="none" stroke="#22d3ee" strokeWidth="1.6" vectorEffect="non-scaling-stroke" />
+            {['60m', '45m', '30m', '15m', 'now'].map((l, i, arr) => (
+              <text key={l} x={PAD_L + (i / (arr.length - 1)) * plotW} y={H - 6}
+                    fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="11" textAnchor="middle">{l}</text>
+            ))}
+          </svg>
+        )}
+      </div>
     </div>
   );
 }
@@ -1268,37 +1252,90 @@ function QualityScatterLive() {
 }
 
 function QualityScatterRaw({ points }: { points: Array<{ id: string; lat: number; loss: number; color: string; size: number }> }) {
-  const W = 1000, H = 200, PAD = 36;
-  const maxLat = 150, maxLoss = 5;
-  const x = (lat: number) => PAD + (lat / maxLat) * (W - PAD * 2);
-  const y = (loss: number) => H - PAD - (loss / maxLoss) * (H - PAD * 2);
+  // Auto-scale X to the actual latency range. Pick a sensible upper bound:
+  // at least 100ms (so the "<30ms = excellent" zone is meaningful) and at
+  // least 1.4× the slowest point. Keeps three traffic-light bands proportional.
+  const observedMax = points.reduce((m, p) => Math.max(m, p.lat), 0);
+  const maxLat = Math.max(100, Math.ceil(observedMax * 1.4 / 25) * 25);
+  const W = 1000, H = 260, PAD_L = 40, PAD_R = 28, PAD_T = 20, PAD_B = 32;
+  const plotW = W - PAD_L - PAD_R, plotH = H - PAD_T - PAD_B;
+  const maxLoss = 5;
+  const x = (lat: number) => PAD_L + (lat / maxLat) * plotW;
+  const y = (loss: number) => PAD_T + plotH - (loss / maxLoss) * plotH;
+
+  // X tick step rounded to a sensible interval.
+  const targetTicks = 6;
+  const rawStep = maxLat / targetTicks;
+  const niceStep = [10, 20, 25, 50, 100, 200].find(s => s >= rawStep) ?? rawStep;
+  const xTicks: number[] = [];
+  for (let v = 0; v <= maxLat; v += niceStep) xTicks.push(v);
+
+  // Spread overlapping labels — group points by bucket position and stack their labels.
+  const labelOffsets = computeLabelOffsets(points, p => x(p.lat));
+
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full block" style={{ height: 200 }}>
-      <rect x={PAD} y={PAD} width={x(40) - PAD} height={y(0.5) - PAD} fill="#34d39911" />
-      <rect x={x(40)} y={PAD} width={x(80) - x(40)} height={y(1.5) - PAD} fill="#fbbf2411" />
-      <rect x={x(80)} y={PAD} width={W - PAD - x(80)} height={H - PAD * 2} fill="#fb718511" />
-      {[0, 25, 50, 75, 100, 125, 150].map(v => (
-        <g key={v}>
-          <line x1={x(v)} y1={PAD} x2={x(v)} y2={H - PAD} stroke="rgba(63,63,70,0.25)" />
-          <text x={x(v)} y={H - PAD + 14} textAnchor="middle" fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="9">{v}</text>
-        </g>
-      ))}
-      {[0, 1, 2, 3, 4, 5].map(v => (
-        <g key={v}>
-          <line x1={PAD} y1={y(v)} x2={W - PAD} y2={y(v)} stroke="rgba(63,63,70,0.25)" />
-          <text x={PAD - 6} y={y(v) + 3} textAnchor="end" fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="9">{v}%</text>
-        </g>
-      ))}
-      <text x={W / 2} y={H - 4} textAnchor="middle" fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="9.5">latency · ms</text>
-      {points.map(p => (
-        <g key={p.id}>
-          <circle cx={x(p.lat)} cy={y(p.loss)} r={p.size + 4} fill={p.color} opacity="0.15" />
-          <circle cx={x(p.lat)} cy={y(p.loss)} r={p.size} fill={p.color} opacity="0.9" />
-          <text x={x(p.lat) + p.size + 4} y={y(p.loss) + 3} fill="#d4d4d8" fontFamily="JetBrains Mono, monospace" fontSize="10">{p.id}</text>
-        </g>
-      ))}
-    </svg>
+    <div className="relative" style={{ height: 260 }}>
+      {points.length === 0 ? (
+        <div className="absolute inset-0 flex items-center justify-center text-[12px] text-zinc-500 font-mono">probing targets…</div>
+      ) : (
+        <svg viewBox={`0 0 ${W} ${H}`} className="absolute inset-0 w-full h-full block" preserveAspectRatio="none">
+          {/* Traffic-light zones — <30ms green, 30–100ms amber, >100ms rose */}
+          <rect x={PAD_L}                       y={PAD_T} width={Math.max(0, x(Math.min(30, maxLat)) - PAD_L)} height={plotH} fill="#34d39911" />
+          {maxLat > 30 && <rect x={x(30)}        y={PAD_T} width={x(Math.min(100, maxLat)) - x(30)}            height={plotH} fill="#fbbf2411" />}
+          {maxLat > 100 && <rect x={x(100)}      y={PAD_T} width={(W - PAD_R) - x(100)}                          height={plotH} fill="#fb718511" />}
+
+          {/* X grid + labels */}
+          {xTicks.map(v => (
+            <g key={v}>
+              <line x1={x(v)} y1={PAD_T} x2={x(v)} y2={PAD_T + plotH} stroke="rgba(63,63,70,0.25)" vectorEffect="non-scaling-stroke" />
+              <text x={x(v)} y={PAD_T + plotH + 16} textAnchor="middle" fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="11">{v}</text>
+            </g>
+          ))}
+          {[0, 1, 2, 3, 4, 5].map(v => (
+            <g key={v}>
+              <line x1={PAD_L} y1={y(v)} x2={W - PAD_R} y2={y(v)} stroke="rgba(63,63,70,0.25)" vectorEffect="non-scaling-stroke" />
+              <text x={PAD_L - 6} y={y(v) + 4} textAnchor="end" fill="#71717a" fontFamily="JetBrains Mono, monospace" fontSize="11">{v}%</text>
+            </g>
+          ))}
+          <text x={(PAD_L + W - PAD_R) / 2} y={H - 6} textAnchor="middle" fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="11">latency · ms</text>
+          <text x={PAD_L - 6} y={PAD_T - 4} textAnchor="end" fill="#52525b" fontFamily="JetBrains Mono, monospace" fontSize="11">loss</text>
+
+          {points.map((p, i) => (
+            <g key={p.id}>
+              <circle cx={x(p.lat)} cy={y(p.loss)} r={p.size + 4} fill={p.color} opacity="0.15" />
+              <circle cx={x(p.lat)} cy={y(p.loss)} r={p.size}      fill={p.color} opacity="0.9" />
+              <text x={x(p.lat) + p.size + 6} y={y(p.loss) + 3 + labelOffsets[i]!}
+                    fill="#d4d4d8" fontFamily="JetBrains Mono, monospace" fontSize="11">{p.id}</text>
+            </g>
+          ))}
+        </svg>
+      )}
+    </div>
   );
+}
+
+/**
+ * When several scatter dots cluster within ~50px, stack their labels by
+ * giving them alternating Y offsets so the text doesn't overlap.
+ */
+function computeLabelOffsets<T>(items: T[], xOf: (item: T) => number): number[] {
+  const out: number[] = new Array(items.length).fill(0);
+  // Walk in X order so we can detect proximity by previous element.
+  const indexed = items.map((item, i) => ({ i, x: xOf(item) }));
+  indexed.sort((a, b) => a.x - b.x);
+  let lastX = -Infinity;
+  let stackedAbove = false;
+  for (const { i, x } of indexed) {
+    if (Math.abs(x - lastX) < 50) {
+      out[i] = stackedAbove ? 12 : -12;
+      stackedAbove = !stackedAbove;
+    } else {
+      out[i] = 0;
+      stackedAbove = false;
+    }
+    lastX = x;
+  }
+  return out;
 }
 
 const APP_DATA = [
