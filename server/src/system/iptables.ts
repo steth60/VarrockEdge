@@ -4,10 +4,16 @@ import { db } from '../db/client';
 import { fwDnat, fwSnat, fwRules, settings } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { log } from '../logger';
+import { assertSafeArg } from '../validators';
 
 const PROTO_FLAGS = (proto: string): string[] => proto === 'both' ? ['tcp'] : [proto];
 
 export async function applyDnat(row: typeof fwDnat.$inferSelect, op: 'A' | 'D' = 'A') {
+  // Defence in depth — these become iptables argv run as root. Reject any
+  // value that could be parsed as a flag (route schemas validate format).
+  assertSafeArg(config.wanIface, 'wanIface');
+  assertSafeArg(config.lanIface, 'lanIface');
+  assertSafeArg(row.destIp, 'destIp');
   for (const p of (row.proto === 'both' ? ['tcp', 'udp'] : [row.proto])) {
     await exec('iptables', [
       '-t', 'nat', `-${op}`, 'PREROUTING',
@@ -27,6 +33,9 @@ export async function applyDnat(row: typeof fwDnat.$inferSelect, op: 'A' | 'D' =
 }
 
 export async function applySnat(row: typeof fwSnat.$inferSelect, op: 'A' | 'D' = 'A') {
+  assertSafeArg(row.outIface, 'outIface');
+  assertSafeArg(row.source, 'source');
+  if (row.toSource) assertSafeArg(row.toSource, 'toSource');
   const args = ['-t', 'nat', `-${op}`, 'POSTROUTING', '-o', row.outIface, '-s', row.source, '-j', row.mode];
   if (row.mode === 'SNAT' && row.toSource) {
     args.push('--to-source', row.toSource);
@@ -35,6 +44,9 @@ export async function applySnat(row: typeof fwSnat.$inferSelect, op: 'A' | 'D' =
 }
 
 export async function applyRule(row: typeof fwRules.$inferSelect, op: 'A' | 'D' = 'A') {
+  if (row.source) assertSafeArg(row.source, 'source');
+  if (row.dport) assertSafeArg(row.dport, 'dport');
+  if (row.comment) assertSafeArg(row.comment, 'comment');
   const args = [`-${op}`, row.chain];
   if (row.proto && row.proto !== 'all') args.push('-p', row.proto);
   if (row.source) args.push('-s', row.source);
