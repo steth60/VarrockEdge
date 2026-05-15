@@ -7,6 +7,7 @@ import { Header } from './components/Header';
 import { TweaksPanel } from './components/TweaksPanel';
 import { CommandPalette } from './components/CommandPalette';
 import { Login } from './views/Login';
+import { ForcePasswordChange } from './views/ForcePasswordChange';
 import { Overview } from './views/Overview';
 import { Dhcp } from './views/Dhcp';
 import { Dns } from './views/Dns';
@@ -43,6 +44,11 @@ export default function App() {
   }
 
   if (!auth.user) return <Login onLogin={auth.login} />;
+
+  // The server refuses every non-auth API call until this is resolved.
+  if (auth.user.mustChangePassword) {
+    return <ForcePasswordChange onDone={auth.refresh} onLogout={auth.logout} />;
+  }
 
   return (
     <div className="app-bg h-screen overflow-hidden flex flex-col">
