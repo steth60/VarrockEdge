@@ -103,6 +103,11 @@ async function main() {
         objectSrc: ["'none'"],
         frameAncestors: ["'none'"],
         baseUri: ["'self'"],
+        // The appliance serves plain HTTP on the LAN. helmet's default CSP
+        // includes `upgrade-insecure-requests`, which makes the browser refetch
+        // every asset over HTTPS — that fails (no TLS on :8080) and the SPA
+        // never loads. Disable it; a real TLS proxy in front can re-add it.
+        'upgrade-insecure-requests': null,
       },
     },
     // Plain HTTP behind an optional upstream TLS proxy — the proxy owns HSTS.
