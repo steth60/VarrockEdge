@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import request from 'supertest';
+import { eq } from 'drizzle-orm';
 import { runMigrations } from '../../server/src/db/migrate';
 import { db } from '../../server/src/db/client';
 import { users, dnsRecords } from '../../server/src/db/schema';
@@ -22,7 +23,9 @@ app.use('/api/overview', requireAuth, overviewRoutes);
 
 beforeAll(async () => {
   runMigrations();
-  db.delete(users).run();
+  // Scope cleanup to this file's own user — the test DB is shared, so a
+  // blanket `delete(users)` would wipe rows other test files depend on.
+  db.delete(users).where(eq(users.email, 'test@example.com')).run();
   db.insert(users).values({
     email: 'test@example.com',
     name: 'Tester',
