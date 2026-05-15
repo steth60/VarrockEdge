@@ -8,8 +8,11 @@ import os from 'node:os';
 import { config } from './config';
 import { log } from './logger';
 import { runMigrations } from './db/migrate';
-import { loadUser, requireAuth, requireRoleForMutation } from './auth/middleware';
+import { loadUser, requireAuth, requireRoleForMutation, type AuthedRequest } from './auth/middleware';
 import { csrfGuard } from './auth/csrf';
+import { db } from './db/client';
+import { sessions } from './db/schema';
+import { lt } from 'drizzle-orm';
 import authRoutes from './auth/routes';
 import overviewRoutes from './routes/overview';
 import metricsRoutes from './routes/metrics';
@@ -66,6 +69,16 @@ async function main() {
   // Reconcile VLAN interfaces, regenerate + restart dnsmasq, and reconcile
   // miniupnpd — so a fresh boot always converges the daemons to the DB.
   await applyNetworks().catch(err => log.warn({ err }, 'network apply skipped'));
+  // Purge expired sessions on boot and hourly — loadUser only deletes a
+  // session lazily when its exact id is presented again, so abandoned
+  // sessions would otherwise accumulate forever.
+  const sweepSessions = () => {
+    const r = db.delete(sessions).where(lt(sessions.expiresAt, new Date())).run();
+    if (r.changes > 0) log.info({ purged: r.changes }, 'expired sessions swept');
+  };
+  sweepSessions();
+  setInterval(sweepSessions, 60 * 60 * 1000).unref();
+
   startDetector();
   startConntrackSampler();
   startLatencyProbe();
@@ -96,9 +109,20 @@ async function main() {
     hsts: false,
   }));
   app.use(express.json({ limit: '1mb' }));
-  app.use(cookieParser());
+  app.use(cookieParser(config.sessionSecret));
   app.use(loadUser);
   app.use(csrfGuard);
+
+  // Forced first-login password change — until the user sets a real password
+  // every API call (except the auth endpoints themselves) is refused, so the
+  // gate cannot be skipped by calling the API directly.
+  app.use((req, res, next) => {
+    if (!req.path.startsWith('/api/') || req.path.startsWith('/api/auth')) return next();
+    if ((req as AuthedRequest).user?.mustChangePassword) {
+      return res.status(403).json({ error: 'password change required', code: 'MUST_CHANGE_PASSWORD' });
+    }
+    next();
+  });
 
   // Public routes
   app.use('/api/auth', authRoutes);
