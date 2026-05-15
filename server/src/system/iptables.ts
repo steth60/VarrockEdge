@@ -1,7 +1,8 @@
 import { exec } from './exec';
 import { config } from '../config';
 import { db } from '../db/client';
-import { fwDnat, fwSnat, fwRules } from '../db/schema';
+import { fwDnat, fwSnat, fwRules, settings } from '../db/schema';
+import { eq } from 'drizzle-orm';
 import { log } from '../logger';
 
 const PROTO_FLAGS = (proto: string): string[] => proto === 'both' ? ['tcp'] : [proto];
@@ -47,6 +48,14 @@ export async function reapplyAll() {
   // Flush our DNAT chain entries, re-add all from DB. Keep MASQUERADE managed by fw_snat rules.
   if (config.onLinux) {
     await exec('iptables', ['-t', 'nat', '-F', 'PREROUTING'], { allowFailure: true });
+    // The flush above also drops the jump into miniupnpd's chain. miniupnpd
+    // owns the MINIUPNPD chain + its rules (which survive — we never flush it);
+    // we just re-add the PREROUTING hook so UPnP mappings keep working.
+    const upnpOn = db.select().from(settings).where(eq(settings.key, 'upnp.enabled')).get()?.value === '1';
+    if (upnpOn) {
+      await exec('iptables', ['-t', 'nat', '-N', 'MINIUPNPD'], { allowFailure: true });
+      await exec('iptables', ['-t', 'nat', '-A', 'PREROUTING', '-i', config.wanIface, '-j', 'MINIUPNPD'], { allowFailure: true });
+    }
   }
   for (const r of db.select().from(fwDnat).all()) {
     if (r.enabled) await applyDnat(r, 'A').catch(err => log.warn({ err, id: r.id }, 'apply dnat fail'));

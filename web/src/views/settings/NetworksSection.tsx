@@ -16,12 +16,14 @@ interface Draft {
   dnsServers: string;
   domain: string;
   purpose: string;
+  upnpAllowed: boolean;
 }
 
 const blankDraft: Draft = {
   name: '', vlanId: '', iface: 'eth1', subnet: '', gateway: '',
   dhcpEnabled: true, dhcpStart: '', dhcpEnd: '', leaseTime: '24h',
   dnsServers: '1.1.1.1', domain: 'varrok.local', purpose: 'corporate',
+  upnpAllowed: false,
 };
 
 const linkDot = (l: string) => l === 'up' ? 'bg-emerald-400' : l === 'synthetic' ? 'bg-zinc-500' : 'bg-rose-400';
@@ -44,6 +46,7 @@ export function NetworksSection() {
       subnet: n.subnet, gateway: n.gateway, dhcpEnabled: n.dhcpEnabled,
       dhcpStart: n.dhcpStart, dhcpEnd: n.dhcpEnd, leaseTime: n.leaseTime,
       dnsServers: n.dnsServers, domain: n.domain, purpose: n.purpose,
+      upnpAllowed: n.upnpAllowed,
     });
     setEditing(n); setCreating(false); setErr(null);
   };
@@ -64,6 +67,7 @@ export function NetworksSection() {
       dnsServers: draft.dnsServers.trim(),
       domain: draft.domain.trim(),
       purpose: draft.purpose,
+      upnpAllowed: draft.upnpAllowed,
     };
     try {
       if (editing) await api.patch(`/api/networks/${editing.id}`, body);
@@ -107,6 +111,7 @@ export function NetworksSection() {
                       <span className={`w-1.5 h-1.5 rounded-full ${linkDot(n.link)}`} title={n.link} />
                       <span className="text-zinc-100">{n.name}</span>
                       {n.isDefault && <Badge variant="neutral" size="sm">default</Badge>}
+                      {n.upnpAllowed && <Badge variant="warn" size="sm">UPnP</Badge>}
                     </span>
                   </td>
                   <td className="py-3 pr-4 font-mono text-zinc-400">{n.vlanId ?? '—'}</td>
@@ -171,6 +176,11 @@ export function NetworksSection() {
           <div className="md:col-span-2 flex items-center gap-3 py-1">
             <ToggleSwitch value={draft.dhcpEnabled} onChange={(v) => setDraft({ ...draft, dhcpEnabled: v })} />
             <span className="text-[12.5px] text-zinc-200">Run a DHCP server on this network</span>
+          </div>
+          <div className="md:col-span-2 flex items-center gap-3 py-1">
+            <ToggleSwitch value={draft.upnpAllowed} onChange={(v) => setDraft({ ...draft, upnpAllowed: v })} />
+            <span className="text-[12.5px] text-zinc-200">Allow UPnP / NAT-PMP</span>
+            <span className="text-[11px] text-zinc-500">devices here may auto-open WAN ports</span>
           </div>
           {draft.dhcpEnabled && <>
             <Field label="DHCP range start">

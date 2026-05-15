@@ -50,6 +50,7 @@ export const networks = sqliteTable('networks', {
   purpose:     text('purpose').notNull().default('corporate'), // corporate|guest|iot|management
   enabled:     integer('enabled', { mode: 'boolean' }).notNull().default(true),
   isDefault:   integer('is_default', { mode: 'boolean' }).notNull().default(false),
+  upnpAllowed: integer('upnp_allowed', { mode: 'boolean' }).notNull().default(false),
   createdAt:   integer('created_at').notNull(),
 });
 

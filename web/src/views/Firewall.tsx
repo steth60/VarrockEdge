@@ -7,7 +7,7 @@ interface Snat { id: number; source: string; outIface: string; mode: 'MASQUERADE
 interface Rule { id: number; chain: string; action: string; proto: string; source: string | null; dport: string | null; comment: string | null }
 
 export function Firewall() {
-  const [tab, setTab] = useState<'nat' | 'snat' | 'fw'>('nat');
+  const [tab, setTab] = useState<'nat' | 'snat' | 'fw' | 'upnp'>('nat');
   const [forwards, setForwards] = useState<Dnat[]>([]);
   const [snatRules, setSnatRules] = useState<Snat[]>([]);
   const [fwRules, setFwRules] = useState<Rule[]>([]);
@@ -26,6 +26,7 @@ export function Firewall() {
           { id: 'nat',  label: 'Port Forwarding (DNAT)', icon: 'ArrowRightLeft' },
           { id: 'snat', label: 'Source NAT',             icon: 'Shuffle' },
           { id: 'fw',   label: 'Firewall Rules',         icon: 'Shield' },
+          { id: 'upnp', label: 'UPnP / NAT-PMP',         icon: 'Router' },
         ].map(t => (
           <button key={t.id} onClick={() => setTab(t.id as any)}
                   className={`inline-flex items-center gap-2 h-8 px-3 rounded-md text-[12px] font-medium transition-colors ${tab === t.id ? 'bg-zinc-800/80 text-zinc-100' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/40'}`}>
@@ -37,6 +38,115 @@ export function Firewall() {
       {tab === 'nat' && <DnatPanel forwards={forwards} reload={reload} />}
       {tab === 'snat' && <SnatPanel rules={snatRules} reload={reload} />}
       {tab === 'fw' && <FwRulesPanel rules={fwRules} reload={reload} />}
+      {tab === 'upnp' && <UpnpPanel />}
+    </div>
+  );
+}
+
+interface UpnpMapping {
+  proto: 'TCP' | 'UDP';
+  externalPort: number;
+  internalIp: string;
+  internalPort: number;
+  description: string;
+  expiresAt: number | null;
+}
+interface UpnpState {
+  enabled: boolean;
+  running: boolean;
+  allowedNetworks: Array<{ id: number; name: string; vlanId: number | null }>;
+  mappingCount: number;
+  mappings: UpnpMapping[];
+}
+
+function expiryLabel(ts: number | null): string {
+  if (ts === null) return 'no expiry';
+  const d = (ts - Date.now()) / 1000;
+  if (d <= 0) return 'expired';
+  if (d < 3600) return `${Math.round(d / 60)}m left`;
+  if (d < 86400) return `${Math.round(d / 3600)}h left`;
+  return `${Math.round(d / 86400)}d left`;
+}
+
+function UpnpPanel() {
+  const [st, setSt] = useState<UpnpState | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const reload = () => api.get<UpnpState>('/api/upnp').then(setSt).catch(() => {});
+  useEffect(() => { reload(); const t = setInterval(reload, 20_000); return () => clearInterval(t); }, []);
+
+  const toggle = async () => {
+    if (!st) return;
+    if (!st.enabled && !window.confirm('Enable UPnP? LAN devices on opted-in networks will be able to open WAN ports without admin approval.')) return;
+    setBusy(true);
+    try { setSt(await api.patch<UpnpState>('/api/upnp', { enabled: !st.enabled })); }
+    catch (e: any) { alert(e?.message ?? 'failed'); }
+    finally { setBusy(false); }
+  };
+
+  const revoke = async (m: UpnpMapping) => {
+    if (!window.confirm(`Revoke the ${m.proto} :${m.externalPort} → ${m.internalIp}:${m.internalPort} mapping?`)) return;
+    try { await api.delete(`/api/upnp/mappings/${m.proto}/${m.externalPort}`); reload(); }
+    catch (e: any) { alert(e?.message ?? 'failed'); }
+  };
+
+  return (
+    <div className="space-y-6">
+      <Card title="UPnP IGD / NAT-PMP" subtitle="Lets LAN devices auto-open WAN ports — gated, per-network"
+            action={
+              <Button variant={st?.enabled ? 'danger' : 'primary'} size="sm" icon="Power" onClick={toggle} disabled={busy || !st}>
+                {st?.enabled ? 'Disable UPnP' : 'Enable UPnP'}
+              </Button>
+            }>
+        <div className="flex flex-wrap items-center gap-3">
+          <Badge variant={st?.running ? 'success' : st?.enabled ? 'warn' : 'neutral'} size="md" icon={st?.running ? 'CheckCircle2' : 'CircleSlash'}>
+            {!st ? 'loading…' : st.running ? 'running' : st.enabled ? 'enabled — not running' : 'disabled'}
+          </Badge>
+          <span className="text-[12px] text-zinc-500">
+            {st && st.allowedNetworks.length > 0
+              ? <>honoured on: {st.allowedNetworks.map(n => n.name).join(', ')}</>
+              : 'no networks opted in — enable "Allow UPnP" on a network under Settings → Networks'}
+          </span>
+        </div>
+        <p className="text-[11.5px] text-zinc-500 mt-3 leading-relaxed">
+          Mappings are created by devices on opted-in networks (game consoles, servers). Secure mode is on —
+          a device can only forward a port to its own address. Every mapping is listed below and can be revoked.
+        </p>
+      </Card>
+
+      <Card title="Active mappings" subtitle={st ? `${st.mappings.length} live port mapping${st.mappings.length === 1 ? '' : 's'}` : '—'}>
+        <table className="w-full text-[12.5px]">
+          <thead>
+            <tr className="text-left text-[10.5px] uppercase tracking-[0.08em] text-zinc-500 border-b border-zinc-800/70">
+              <th className="font-medium py-2.5 pr-4">Ext. Port</th>
+              <th className="font-medium py-2.5 pr-4">Proto</th>
+              <th className="font-medium py-2.5 pr-4">Internal Target</th>
+              <th className="font-medium py-2.5 pr-4">Description</th>
+              <th className="font-medium py-2.5 pr-4">Lease</th>
+              <th className="font-medium py-2.5 text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-zinc-800/60">
+            {st?.mappings.map(m => (
+              <tr key={`${m.proto}:${m.externalPort}`} className="hover:bg-zinc-900/30 group">
+                <td className="py-3 pr-4 font-mono text-cyan-300">{m.externalPort}</td>
+                <td className="py-3 pr-4"><Badge variant="neutral" size="sm">{m.proto}</Badge></td>
+                <td className="py-3 pr-4 font-mono text-zinc-300">{m.internalIp}:{m.internalPort}</td>
+                <td className="py-3 pr-4 text-zinc-400">{m.description}</td>
+                <td className="py-3 pr-4 font-mono text-zinc-500">{expiryLabel(m.expiresAt)}</td>
+                <td className="py-3 text-right">
+                  <Button variant="danger" size="sm" icon="Trash2" className="opacity-0 group-hover:opacity-100 transition-opacity" onClick={() => revoke(m)}>Revoke</Button>
+                </td>
+              </tr>
+            ))}
+            {st && st.mappings.length === 0 && (
+              <tr><td colSpan={6} className="py-8 text-center text-[12px] text-zinc-600">
+                {st.enabled ? 'no active mappings — devices have not requested any' : 'UPnP is disabled'}
+              </td></tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
     </div>
   );
 }

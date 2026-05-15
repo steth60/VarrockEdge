@@ -40,6 +40,7 @@ apt-get install -y --no-install-recommends \
   curl ca-certificates gnupg openssl git \
   dnsmasq iptables iptables-persistent \
   wireguard-tools fail2ban conntrack iproute2 \
+  miniupnpd \
   sqlite3 \
   build-essential python3 >/dev/null
 

@@ -30,6 +30,7 @@ const createSchema = z.object({
   domain: z.string().optional(),
   purpose: z.enum(['corporate', 'guest', 'iot', 'management']).optional(),
   enabled: z.boolean().optional(),
+  upnpAllowed: z.boolean().optional(),
 });
 
 router.post('/', requireRole('Owner'), async (req, res) => {

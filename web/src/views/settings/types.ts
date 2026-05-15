@@ -14,6 +14,7 @@ export interface VNetwork {
   purpose: string;
   enabled: boolean;
   isDefault: boolean;
+  upnpAllowed: boolean;
   vlanIface: string;
   link: 'up' | 'down' | 'synthetic';
   leasesUsed: number;

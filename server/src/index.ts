@@ -28,8 +28,10 @@ import probesRoutes from './routes/probes';
 import flowsRoutes from './routes/flows';
 import wanRoutes from './routes/wan';
 import networkRoutes from './routes/networks';
+import upnpRoutes from './routes/upnp';
 import { startDetector } from './system/detector';
 import { syncNetworks } from './system/network';
+import { applyUpnp } from './system/upnp';
 import { ensureServerAsync } from './system/wireguard';
 import { startConntrackSampler } from './system/conntrack';
 import { startLatencyProbe } from './system/latencyProbe';
@@ -61,6 +63,7 @@ async function main() {
   runMigrations();
   await ensureServerAsync().catch(err => log.warn({ err }, 'wg init skipped'));
   await syncNetworks().catch(err => log.warn({ err }, 'network sync skipped'));
+  await applyUpnp().catch(err => log.warn({ err }, 'upnp apply skipped'));
   startDetector();
   startConntrackSampler();
   startLatencyProbe();
@@ -95,6 +98,7 @@ async function main() {
   app.use('/api/flows',    requireAuth, flowsRoutes);
   app.use('/api/wan',      requireAuth, wanRoutes);
   app.use('/api/networks', requireAuth, networkRoutes);
+  app.use('/api/upnp',     requireAuth, upnpRoutes);
 
   // In-app docs viewer — must be mounted BEFORE the SPA catch-all.
   app.use('/docs', requireAuth, docsRoutes);

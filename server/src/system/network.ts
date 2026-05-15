@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm';
 import { config } from '../config';
 import { exec } from './exec';
 import { parseLeases, reload as dnsmasqReload } from './dnsmasq';
+import { applyUpnp } from './upnp';
 import { log } from '../logger';
 
 // ─── CIDR helpers ───────────────────────────────────────────────────
@@ -107,10 +108,12 @@ export async function syncNetworks(): Promise<void> {
 }
 
 /** Sync interfaces then regenerate + reload dnsmasq. Order matters: dnsmasq
- *  binds to each `interface=` line, so the ifaces must exist first. */
+ *  binds to each `interface=` line, so the ifaces must exist first. Also
+ *  reconciles miniupnpd, whose listening interfaces track the networks. */
 export async function applyNetworks(): Promise<void> {
   await syncNetworks();
   await dnsmasqReload();
+  await applyUpnp().catch(err => log.warn({ err }, 'upnp reconcile skipped'));
 }
 
 // ─── Listing with live status + lease usage ─────────────────────────
@@ -175,6 +178,7 @@ export interface NetworkInput {
   domain?: string;
   purpose?: string;
   enabled?: boolean;
+  upnpAllowed?: boolean;
 }
 
 export async function createNetwork(input: NetworkInput): Promise<Network> {
@@ -193,6 +197,7 @@ export async function createNetwork(input: NetworkInput): Promise<Network> {
     purpose: input.purpose ?? 'corporate',
     enabled: input.enabled ?? true,
     isDefault: false,
+    upnpAllowed: input.upnpAllowed ?? false,
     createdAt: Date.now(),
   }).returning().get();
   await applyNetworks();

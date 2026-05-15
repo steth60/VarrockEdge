@@ -33,6 +33,7 @@ const UNITS: Array<Omit<Service, 'status' | 'sub' | 'enabled' | 'uptime' | 'pid'
   { unit: 'systemd-networkd.service',  desc: 'Network configuration manager',       category: 'Network',    depends: [],                            triggers: [],                    file: '/lib/systemd/system/systemd-networkd.service',  critical: false, binary: 'systemd-networkd' },
   { unit: 'systemd-resolved.service',  desc: 'Network name resolution',             category: 'Network',    depends: [],                            triggers: [],                    file: '/lib/systemd/system/systemd-resolved.service',  critical: false, binary: 'systemd-resolved' },
   { unit: 'avahi-daemon.service',      desc: 'Avahi mDNS/DNS-SD daemon',            category: 'Network',    depends: ['dbus.service'],              triggers: [],                    file: '/lib/systemd/system/avahi-daemon.service',      critical: false, binary: 'avahi-daemon' },
+  { unit: 'miniupnpd.service',         desc: 'UPnP IGD + NAT-PMP daemon',           category: 'Network',    depends: ['network-online.target'],     triggers: [],                    file: '/lib/systemd/system/miniupnpd.service',         critical: false, binary: 'miniupnpd' },
 
   { unit: 'netfilter-persistent.service', desc: 'Persistent iptables ruleset',      category: 'Security',   depends: ['network-pre.target'],        triggers: [],                    file: '/lib/systemd/system/netfilter-persistent.service', critical: true,  binary: 'iptables' },
   { unit: 'fail2ban.service',          desc: 'IP banning daemon — log scanner',     category: 'Security',   depends: ['netfilter-persistent.service'], triggers: [],                 file: '/lib/systemd/system/fail2ban.service',          critical: true,  binary: 'fail2ban-client' },
@@ -231,6 +232,7 @@ const REQUIREMENTS: Array<Omit<Requirement, 'installed'>> = [
   { name: 'iptables-save',      binary: 'iptables-save',   feature: 'Persist firewall on boot', hint: 'apt-get install iptables-persistent',  pkg: 'iptables-persistent' },
   { name: 'netfilter-persistent', binary: 'netfilter-persistent', feature: 'Restore rules at boot', hint: 'apt-get install iptables-persistent', pkg: 'iptables-persistent' },
   { name: 'fail2ban',           binary: 'fail2ban-client', feature: 'Security: block list / IDS', hint: 'apt-get install fail2ban',           pkg: 'fail2ban' },
+  { name: 'miniupnpd',          binary: 'miniupnpd',       feature: 'UPnP IGD + NAT-PMP',       hint: 'apt-get install miniupnpd',            pkg: 'miniupnpd' },
   { name: 'systemctl',          binary: 'systemctl',       feature: 'Service supervision',      hint: 'systemd (built-in)',                   pkg: null },
   { name: 'journalctl',         binary: 'journalctl',      feature: 'Log streaming',            hint: 'systemd (built-in)',                   pkg: null },
   { name: 'sqlite3',            binary: 'sqlite3',         feature: 'DB CLI (optional)',        hint: 'apt-get install sqlite3',              pkg: 'sqlite3' },
