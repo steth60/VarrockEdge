@@ -67,3 +67,18 @@ export function requireRole(...roles: string[]) {
     next();
   };
 }
+
+/**
+ * Like requireRole, but only gates *mutating* verbs. GET/HEAD/OPTIONS stay
+ * open to any authenticated user (read-only views), while POST/PATCH/PUT/
+ * DELETE require one of `roles`. Mounted per router to enforce the tiered
+ * role matrix without having to annotate every individual handler.
+ */
+export function requireRoleForMutation(...roles: string[]) {
+  return (req: AuthedRequest, res: Response, next: NextFunction) => {
+    if (!req.user) return res.status(401).json({ error: 'unauthorized' });
+    if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+    if (!roles.includes(req.user.role)) return res.status(403).json({ error: 'forbidden' });
+    next();
+  };
+}
