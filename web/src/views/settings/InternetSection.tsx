@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react';
-import { Card, Button, Modal, Field, Input, Select, Badge, Icon } from '../../components/primitives';
+import { Card, Button, Modal, Field, Input, Select, Badge, Icon, KV } from '../../components/primitives';
 import { SpeedTestMainView } from '../../components/SpeedTest';
 import { api } from '../../api/client';
 import type { WanLink } from './types';
+
+interface IfaceInfo { name: string; ip: string | null; mac: string | null; role: string; rxMbps?: number; txMbps?: number; publicIp?: string | null }
+interface InterfacesResp { wan: IfaceInfo; lan: IfaceInfo }
 
 interface Draft {
   iface: string; label: string; role: string; priority: string;
@@ -26,8 +29,15 @@ export function InternetSection() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  const [ifaces, setIfaces] = useState<InterfacesResp | null>(null);
+
   const reload = () => api.get<{ wans: WanLink[] }>('/api/wan').then(r => setWans(r.wans)).catch(() => {});
-  useEffect(() => { reload(); const t = setInterval(reload, 15_000); return () => clearInterval(t); }, []);
+  useEffect(() => {
+    reload();
+    api.get<InterfacesResp>('/api/overview/interfaces').then(setIfaces).catch(() => {});
+    const t = setInterval(reload, 15_000);
+    return () => clearInterval(t);
+  }, []);
 
   const openCreate = () => { setDraft(blankDraft); setCreating(true); setEditing(null); setErr(null); };
   const openEdit = (w: WanLink) => {
@@ -66,6 +76,19 @@ export function InternetSection() {
 
   return (
     <div className="space-y-6">
+      <Card title="WAN interface" subtitle="The OS-defined uplink ethernet — configured at the Proxmox / OS layer">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-5">
+          <KV k="Interface" v={ifaces?.wan.name ?? '—'} mono />
+          <KV k="IPv4 address" v={ifaces?.wan.ip ?? '—'} mono />
+          <KV k="MAC" v={ifaces?.wan.mac ?? '—'} mono />
+          <KV k="Public IP" v={ifaces?.wan.publicIp ?? '—'} mono />
+        </div>
+        <p className="text-[11.5px] text-zinc-500 mt-4">
+          This is the physical WAN port. Add a uplink below to track its health and
+          include it in priority-based failover; the interface itself is defined on the host.
+        </p>
+      </Card>
+
       <Card title="Internet" subtitle="WAN uplinks · health probed every 30s · priority-based failover"
             action={<Button variant="primary" size="sm" icon="Plus" onClick={openCreate}>Create New</Button>}>
         <div className="overflow-x-auto">

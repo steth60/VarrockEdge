@@ -12,7 +12,6 @@ import { Dhcp } from './views/Dhcp';
 import { Dns } from './views/Dns';
 import { Topology } from './views/Topology';
 import { Logs } from './views/Logs';
-import { Wireguard } from './views/Wireguard';
 import { Firewall } from './views/Firewall';
 import { Users } from './views/Users';
 import { Services } from './views/Services';
@@ -61,7 +60,7 @@ export default function App() {
                 <Route path="/logs" element={<Logs />} />
                 <Route path="/dhcp" element={<Dhcp />} />
                 <Route path="/dns" element={<Dns />} />
-                <Route path="/vpn" element={<Wireguard />} />
+                <Route path="/vpn" element={<Navigate to="/settings/vpn" replace />} />
                 <Route path="/firewall" element={<Firewall />} />
                 <Route path="/users" element={<Users />} />
                 <Route path="/services" element={<Services />} />

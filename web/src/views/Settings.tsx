@@ -5,10 +5,8 @@ import { api } from '../api/client';
 import { SettingsOverview } from './settings/SettingsOverview';
 import { NetworksSection } from './settings/NetworksSection';
 import { InternetSection } from './settings/InternetSection';
-import { VpnSection } from './settings/VpnSection';
-import { CyberSecureSection } from './settings/CyberSecureSection';
 import { WifiSection } from './settings/WifiSection';
-import { HaSection } from './settings/HaSection';
+import { Wireguard } from './Wireguard';
 
 const FEATURE_SECTIONS = [
   { id: 'overview',     label: 'Overview',          icon: 'LayoutDashboard' },
@@ -16,8 +14,6 @@ const FEATURE_SECTIONS = [
   { id: 'networks',     label: 'Networks',          icon: 'Network' },
   { id: 'internet',     label: 'Internet',          icon: 'Globe' },
   { id: 'vpn',          label: 'VPN',               icon: 'Lock' },
-  { id: 'cybersecure',  label: 'CyberSecure',       icon: 'ShieldCheck' },
-  { id: 'ha',           label: 'High Availability', icon: 'Activity' },
 ] as const;
 
 const SYSTEM_SECTIONS = [
@@ -83,9 +79,7 @@ export function Settings() {
         {section === 'wifi'        && <WifiSection />}
         {section === 'networks'    && <NetworksSection />}
         {section === 'internet'    && <InternetSection />}
-        {section === 'vpn'         && <VpnSection onManage={() => navigate('/vpn')} />}
-        {section === 'cybersecure' && <CyberSecureSection onManage={() => navigate('/services')} />}
-        {section === 'ha'          && <HaSection />}
+        {section === 'vpn'         && <Wireguard />}
         {section === 'general'     && <General />}
         {section === 'security'    && <Security />}
         {section === 'updates'     && <Updates />}
