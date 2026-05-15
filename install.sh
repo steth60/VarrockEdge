@@ -204,20 +204,32 @@ systemctl enable varrok-edge.service >/dev/null
 echo "▸ Bootstrapping firewall — locking down $WAN_IFACE"
 mkdir -p /etc/iptables
 
-# append an INPUT rule only if an identical one is not already present
-ipt4() { iptables  -C INPUT "$@" 2>/dev/null || iptables  -A INPUT "$@"; }
-ipt6() { ip6tables -C INPUT "$@" 2>/dev/null || ip6tables -A INPUT "$@"; }
+# append a rule to a chain only if an identical one is not already present
+ipt4() { iptables  -C INPUT   "$@" 2>/dev/null || iptables  -A INPUT   "$@"; }
+ipt6() { ip6tables -C INPUT   "$@" 2>/dev/null || ip6tables -A INPUT   "$@"; }
+fwd4() { iptables  -C FORWARD "$@" 2>/dev/null || iptables  -A FORWARD "$@"; }
+fwd6() { ip6tables -C FORWARD "$@" 2>/dev/null || ip6tables -A FORWARD "$@"; }
 
 # IPv4 — LAN egress NAT (-t nat must precede the command verb)
 iptables -t nat -C POSTROUTING -o "$WAN_IFACE" -j MASQUERADE 2>/dev/null \
   || iptables -t nat -A POSTROUTING -o "$WAN_IFACE" -j MASQUERADE
 # IPv4 — INPUT: trust loopback + LAN + established; permit only WireGuard
-# inbound on the WAN; drop everything else arriving on the WAN.
+# inbound on the WAN. Everything else is dropped by the chain *policy* set
+# below — the firewall fails closed if the WAN interface is ever renamed or a
+# new interface appears, rather than relying solely on the explicit WAN DROP.
 ipt4 -i lo -j ACCEPT
 ipt4 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 ipt4 -i "${LAN_IFACE}+" -j ACCEPT
 ipt4 -i "$WAN_IFACE" -p udp --dport 51820 -j ACCEPT
 ipt4 -i "$WAN_IFACE" -j DROP
+# IPv4 — FORWARD: the appliance is a router. Permit LAN egress and established
+# return traffic; the wg0 and per-DNAT accepts are added at runtime by the app.
+fwd4 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+fwd4 -i "${LAN_IFACE}+" -j ACCEPT
+# Fail closed — set the default policy AFTER the accepts so the install never
+# locks itself out (the installer's own session is ESTABLISHED).
+iptables -P FORWARD DROP
+iptables -P INPUT DROP
 iptables-save > /etc/iptables/rules.v4 || true
 
 # IPv6 — same lockdown when the stack is present. ICMPv6 must stay open
@@ -229,6 +241,11 @@ if command -v ip6tables >/dev/null 2>&1 && ip6tables -L >/dev/null 2>&1; then
   ipt6 -i "${LAN_IFACE}+" -j ACCEPT
   ipt6 -i "$WAN_IFACE" -p udp --dport 51820 -j ACCEPT
   ipt6 -i "$WAN_IFACE" -j DROP
+  fwd6 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  fwd6 -p ipv6-icmp -j ACCEPT
+  fwd6 -i "${LAN_IFACE}+" -j ACCEPT
+  ip6tables -P FORWARD DROP
+  ip6tables -P INPUT DROP
   ip6tables-save > /etc/iptables/rules.v6 || true
 fi
 
