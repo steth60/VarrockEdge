@@ -8,6 +8,7 @@ import { wgPeers, wgServer } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { log } from '../logger';
 import { noNewline, assertMatches, CIDR, CIDR_LIST, WG_KEY, ENDPOINT } from '../validators';
+import { atomicWrite } from './fsutil';
 
 const WG_DIR = config.onLinux ? '/etc/wireguard' : path.join(config.configDir, 'wireguard');
 const WG_CONF = path.join(WG_DIR, 'wg0.conf');
@@ -397,7 +398,9 @@ export function renderServerConfig(): string {
 
 export async function writeServerConfig() {
   if (!fs.existsSync(WG_DIR)) fs.mkdirSync(WG_DIR, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(WG_CONF, renderServerConfig(), { mode: 0o600 });
+  // wg0.conf holds the server private key — 0600, written atomically so a
+  // reader never sees it half-rendered.
+  atomicWrite(WG_CONF, renderServerConfig(), 0o600);
   log.info({ WG_CONF }, 'wg.write');
 }
 

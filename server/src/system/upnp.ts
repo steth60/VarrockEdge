@@ -9,6 +9,7 @@ import { eq } from 'drizzle-orm';
 import { action } from './systemd';
 import { log } from '../logger';
 import { noNewline } from '../validators';
+import { atomicWrite } from './fsutil';
 
 const CONF_DIR = config.onLinux ? '/etc/miniupnpd' : path.join(config.configDir, 'miniupnpd');
 const CONF_FILE = path.join(CONF_DIR, 'miniupnpd.conf');
@@ -70,7 +71,7 @@ export function renderConfig(): string {
 
 export function writeConfig(): void {
   if (!fs.existsSync(CONF_DIR)) fs.mkdirSync(CONF_DIR, { recursive: true, mode: 0o750 });
-  fs.writeFileSync(CONF_FILE, renderConfig(), { mode: 0o640 });
+  atomicWrite(CONF_FILE, renderConfig(), 0o640);
   log.info({ CONF_FILE }, 'miniupnpd.write');
 }
 
