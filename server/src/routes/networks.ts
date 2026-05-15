@@ -5,29 +5,26 @@ import { db } from '../db/client';
 import { networks } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { requireRole } from '../auth/middleware';
+import { zIp, zCidr, zIface, zLease, zIpList, zHostname } from '../validators';
 
 const router = Router();
-
-const ipRe = /^(\d{1,3}\.){3}\d{1,3}$/;
-const cidrRe = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
-const ifaceRe = /^[a-zA-Z0-9._:-]+$/;
 
 router.get('/', async (_req, res) => {
   res.json({ networks: await listNetworks() });
 });
 
 const createSchema = z.object({
-  name: z.string().min(1).max(48),
+  name: z.string().min(1).max(48).regex(/^[^\r\n]+$/, 'name must be a single line'),
   vlanId: z.number().int().min(1).max(4094).nullable().optional(),
-  iface: z.string().min(1).max(32).regex(ifaceRe).optional(),
-  subnet: z.string().regex(cidrRe),
-  gateway: z.string().regex(ipRe),
+  iface: zIface.optional(),
+  subnet: zCidr,
+  gateway: zIp,
   dhcpEnabled: z.boolean().optional(),
-  dhcpStart: z.string().regex(ipRe),
-  dhcpEnd: z.string().regex(ipRe),
-  leaseTime: z.string().optional(),
-  dnsServers: z.string().optional(),
-  domain: z.string().optional(),
+  dhcpStart: zIp,
+  dhcpEnd: zIp,
+  leaseTime: zLease.optional(),
+  dnsServers: zIpList.optional(),
+  domain: zHostname.optional(),
   purpose: z.enum(['corporate', 'guest', 'iot', 'management']).optional(),
   enabled: z.boolean().optional(),
   upnpAllowed: z.boolean().optional(),
