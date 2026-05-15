@@ -83,7 +83,9 @@ router.get('/bans', async (_req, res) => {
 
 const banSchema = z.object({
   ip: z.string().regex(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/),
-  jail: z.string().min(1).default('sshd'),
+  // A fail2ban jail name reaches fail2ban-client as an argument — restrict it
+  // to a safe character set so it can never be parsed as an option flag.
+  jail: z.string().regex(/^[a-zA-Z0-9_-]{1,32}$/).default('sshd'),
 });
 
 router.post('/bans', async (req, res) => {
