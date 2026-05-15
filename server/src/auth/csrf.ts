@@ -38,7 +38,9 @@ function originOf(referer: string | undefined): string | undefined {
 
 export function csrfGuard(req: AuthedRequest, res: Response, next: NextFunction) {
   if (SAFE_METHODS.has(req.method)) return next();
-  if (!req.cookies?.[SESSION_COOKIE]) return next(); // no cookie → nothing to forge
+  // The session cookie is signed, so it normally arrives via signedCookies;
+  // check both jars. No cookie at all → nothing to forge.
+  if (!req.signedCookies?.[SESSION_COOKIE] && !req.cookies?.[SESSION_COOKIE]) return next();
 
   if (!req.get('x-varrok-csrf')) {
     return res.status(403).json({ error: 'csrf: missing X-Varrok-CSRF header' });
