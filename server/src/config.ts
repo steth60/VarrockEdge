@@ -2,7 +2,10 @@ import 'dotenv/config';
 import os from 'node:os';
 import path from 'node:path';
 
-const onLinux = process.platform === 'linux';
+// `onLinux` gates real system integration (native daemons, /etc, iproute2).
+// VE_SYNTHETIC=1 forces the synthetic/dry-run path regardless of platform —
+// used by the test suite so it behaves identically on a Linux CI runner.
+const onLinux = process.platform === 'linux' && process.env.VE_SYNTHETIC !== '1';
 
 function env(name: string, fallback?: string): string {
   const v = process.env[name];

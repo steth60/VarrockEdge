@@ -6,6 +6,9 @@ import fs from 'node:fs';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'varrok-test-'));
 
+// Force synthetic/dry-run mode so the suite behaves identically on macOS dev
+// and a Linux CI runner — no real wg / fail2ban / dnsmasq / /etc writes.
+process.env.VE_SYNTHETIC = '1';
 process.env.VE_DB_PATH = path.join(tmpDir, 'test.db');
 process.env.VE_CONFIG_DIR = tmpDir;
 process.env.VE_BIND_HOST = '127.0.0.1';
