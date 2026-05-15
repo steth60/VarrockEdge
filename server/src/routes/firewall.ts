@@ -5,8 +5,17 @@ import { fwDnat, fwSnat, fwRules } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { applyDnat, applySnat, applyRule, persist, dnatHits } from '../system/iptables';
 import { zIp, zCidr, zIface, zComment } from '../validators';
+import { requireRole } from '../auth/middleware';
+import { config } from '../config';
 
 const router = Router();
+
+// A DNAT port-forward must target a LAN host — never the appliance's own
+// management plane or a loopback service, which would republish the control
+// plane on the public WAN IP.
+function isApplianceAddress(ip: string): boolean {
+  return ip === config.bindHost || ip.startsWith('127.') || ip === '::1' || ip === '0.0.0.0';
+}
 
 // A firewall source may be a single host or a CIDR block.
 const zSource = z.union([zIp, zCidr]);
@@ -33,16 +42,19 @@ const dnatSchema = z.object({
   comment: zComment.optional(),
 });
 
-router.post('/dnat', async (req, res) => {
+router.post('/dnat', requireRole('Owner', 'Admin'), async (req, res) => {
   const parse = dnatSchema.safeParse(req.body);
   if (!parse.success) return res.status(400).json({ error: 'invalid input', issues: parse.error.issues });
+  if (isApplianceAddress(parse.data.destIp)) {
+    return res.status(400).json({ error: 'DNAT destination may not be the appliance itself' });
+  }
   const row = db.insert(fwDnat).values(parse.data).returning().get();
   await applyDnat(row, 'A').catch(() => {});
   await persist();
   res.json({ forward: row });
 });
 
-router.delete('/dnat/:id', async (req, res) => {
+router.delete('/dnat/:id', requireRole('Owner', 'Admin'), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
   const row = db.select().from(fwDnat).where(eq(fwDnat.id, id)).get();
