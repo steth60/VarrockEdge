@@ -12,23 +12,47 @@ interface Threat { id: number; severity: string; status: string }
 const NAV = [
   { id: 'overview', to: '/overview', label: 'Overview',       icon: 'LayoutDashboard', section: 'Monitor' },
   { id: 'topology', to: '/topology', label: 'Topology',       icon: 'Workflow',         section: 'Monitor' },
-  { id: 'sysdata',  to: '/sysdata',  label: 'System Data',    icon: 'Activity',         section: 'Monitor', hint: 'telemetry' },
   { id: 'logs',     to: '/logs',     label: 'Logs & Threats', icon: 'ShieldAlert',      section: 'Monitor', hint: 'IDS' },
   { id: 'dhcp',     to: '/dhcp',     label: 'DHCP',           icon: 'Plug',             section: 'Network', hint: 'leases' },
   { id: 'dns',      to: '/dns',      label: 'DNS',            icon: 'Globe2',           section: 'Network', hint: 'dnsmasq' },
   { id: 'vpn',      to: '/vpn',      label: 'WireGuard',      icon: 'ShieldCheck',      section: 'Network', hint: 'wg0' },
   { id: 'fw',       to: '/firewall', label: 'Firewall',       icon: 'Flame',            section: 'Network', hint: 'iptables' },
+  { id: 'sysdata',  to: '/sysdata',  label: 'System Data',    icon: 'Activity',         section: 'System',  hint: 'telemetry' },
   { id: 'services', to: '/services', label: 'Services',       icon: 'Boxes',            section: 'System',  hint: 'systemd' },
   { id: 'users',    to: '/users',    label: 'Users',          icon: 'Users',            section: 'System' },
   { id: 'settings', to: '/settings', label: 'Settings',       icon: 'Settings',         section: 'System' },
 ] as const;
 
 type Section = 'Monitor' | 'Network' | 'System';
-const SECTIONS: Section[] = ['Monitor', 'Network', 'System'];
+// Monitor + Network live in the scrolling rail; System items are pinned to the
+// always-visible bottom block so Settings / Users can never be clipped.
+const TOP_SECTIONS: Section[] = ['Monitor', 'Network'];
 
-export function Sidebar({ tweaks, user, onLogout }: { tweaks: Tweaks; user: AuthUser | null; onLogout: () => void }) {
+type NavEntry = typeof NAV[number];
+
+function NavItem({ item, accentHex }: { item: NavEntry; accentHex: string }) {
+  return (
+    <Tipped label={item.label} hint={'hint' in item ? (item as any).hint : undefined}>
+      <NavLink to={item.to}>
+        {({ isActive }) => (
+          <div
+            className={`relative w-9 h-9 rounded-lg flex items-center justify-center transition-colors ${
+              isActive ? 'bg-zinc-800/70 text-zinc-100' : 'text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800/40'
+            }`}
+          >
+            {isActive && (
+              <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-r" style={{ background: accentHex }} />
+            )}
+            <Icon name={item.icon} size={16} strokeWidth={isActive ? 2 : 1.75} />
+          </div>
+        )}
+      </NavLink>
+    </Tipped>
+  );
+}
+
+export function Sidebar({ tweaks, user }: { tweaks: Tweaks; user: AuthUser | null }) {
   const accent = ACCENT_PALETTE[tweaks.accent];
-  const initials = (user?.name ?? 'A').split(' ').map(s => s[0]).slice(0, 2).join('').toUpperCase();
   const [openThreats, setOpenThreats] = useState<{ count: number; critical: number }>({ count: 0, critical: 0 });
 
   useEffect(() => {
@@ -59,31 +83,11 @@ export function Sidebar({ tweaks, user, onLogout }: { tweaks: Tweaks; user: Auth
       <div className="w-7 h-px bg-zinc-800/70 my-1" />
 
       <nav className="flex-1 flex flex-col items-center gap-1 w-full">
-        {SECTIONS.map((section, idx) => (
+        {TOP_SECTIONS.map((section, idx) => (
           <div key={section} className="flex flex-col items-center gap-1 w-full">
             {idx > 0 && <div className="w-7 h-px bg-zinc-800/70 my-1" />}
             {NAV.filter(n => n.section === section).map(item => (
-              <Tipped key={item.id} label={item.label} hint={'hint' in item ? (item as any).hint : undefined}>
-                <NavLink to={item.to}>
-                  {({ isActive }) => (
-                    <div
-                      className={`relative w-9 h-9 rounded-lg flex items-center justify-center transition-colors ${
-                        isActive
-                          ? 'bg-zinc-800/70 text-zinc-100'
-                          : 'text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800/40'
-                      }`}
-                    >
-                      {isActive && (
-                        <span
-                          className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-r"
-                          style={{ background: accent.hex }}
-                        />
-                      )}
-                      <Icon name={item.icon} size={16} strokeWidth={isActive ? 2 : 1.75} />
-                    </div>
-                  )}
-                </NavLink>
-              </Tipped>
+              <NavItem key={item.id} item={item} accentHex={accent.hex} />
             ))}
           </div>
         ))}
@@ -91,7 +95,12 @@ export function Sidebar({ tweaks, user, onLogout }: { tweaks: Tweaks; user: Auth
 
       <div className="w-7 h-px bg-zinc-800/70 my-1" />
 
+      {/* System group — pinned, always visible regardless of viewport height. */}
       <div className="flex flex-col items-center gap-1 shrink-0">
+        {NAV.filter(n => n.section === 'System').map(item => (
+          <NavItem key={item.id} item={item} accentHex={accent.hex} />
+        ))}
+        <div className="w-7 h-px bg-zinc-800/70 my-1" />
         <Tipped label="Documentation" hint="opens in new tab">
           <a
             href="/docs"
@@ -111,13 +120,6 @@ export function Sidebar({ tweaks, user, onLogout }: { tweaks: Tweaks; user: Auth
               </span>
             )}
           </NavLink>
-        </Tipped>
-        <Tipped label={user?.name ?? 'Account'} hint="click to sign out">
-          <button onClick={onLogout} className="w-9 h-9 rounded-lg flex items-center justify-center">
-            <span className="w-7 h-7 rounded-full bg-gradient-to-br from-cyan-400 to-indigo-500 text-[10px] font-semibold text-zinc-950 flex items-center justify-center">
-              {initials}
-            </span>
-          </button>
         </Tipped>
       </div>
     </aside>

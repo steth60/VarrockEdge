@@ -1,12 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Icon, StatusPill, type StatusKind } from './primitives';
+import { Icon, StatusPill, Badge, type StatusKind } from './primitives';
+import { AccountModal } from './AccountModal';
 import { api } from '../api/client';
+import type { AuthUser } from '../hooks/useAuth';
 
 const TITLES: Record<string, { label: string; section: string; hint?: string }> = {
   '/overview': { section: 'Monitor', label: 'Overview' },
   '/topology': { section: 'Monitor', label: 'Topology' },
-  '/sysdata':  { section: 'Monitor', label: 'System Data',     hint: 'telemetry' },
+  '/sysdata':  { section: 'System',  label: 'System Data',     hint: 'telemetry' },
   '/logs':     { section: 'Monitor', label: 'Logs & Threats',  hint: 'IDS' },
   '/dhcp':     { section: 'Network', label: 'DHCP',            hint: 'leases' },
   '/dns':      { section: 'Network', label: 'DNS',             hint: 'dnsmasq' },
@@ -19,10 +21,20 @@ const TITLES: Record<string, { label: string; section: string; hint?: string }> 
 
 interface Service { name: string; status: 'running' | 'stopped' | 'degraded' }
 
-export function Header({ onOpenPalette }: { onOpenPalette?: () => void }) {
+export function Header({
+  onOpenPalette, user, onLogout, onAccountSaved,
+}: {
+  onOpenPalette?: () => void;
+  user: AuthUser | null;
+  onLogout: () => void;
+  onAccountSaved: () => void;
+}) {
   const loc = useLocation();
   const meta = TITLES[loc.pathname] ?? { section: 'Monitor', label: 'Overview' };
   const [health, setHealth] = useState<{ status: StatusKind; label: string }>({ status: 'running', label: 'all systems normal' });
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const load = () => api.get<{ services: Service[] }>('/api/overview/services').then(r => {
@@ -36,6 +48,20 @@ export function Header({ onOpenPalette }: { onOpenPalette?: () => void }) {
     const t = setInterval(load, 30_000);
     return () => clearInterval(t);
   }, []);
+
+  // Dismiss the account menu on outside-click + Escape.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
+  }, [menuOpen]);
+
+  const initials = (user?.name ?? 'A').split(' ').map(s => s[0]).slice(0, 2).join('').toUpperCase();
 
   return (
     <header className="h-12 shrink-0 border-b border-zinc-800/70 bg-zinc-950/40 backdrop-blur flex items-center gap-4 px-5">
@@ -64,6 +90,46 @@ export function Header({ onOpenPalette }: { onOpenPalette?: () => void }) {
       <Link to="/services" title="Open service status">
         <StatusPill status={health.status} label={health.label} />
       </Link>
+
+      <div className="relative" ref={menuRef}>
+        <button
+          onClick={() => setMenuOpen(o => !o)}
+          aria-label="Account menu"
+          className="w-8 h-8 rounded-full flex items-center justify-center transition-transform hover:scale-105"
+        >
+          <span className="w-7 h-7 rounded-full bg-gradient-to-br from-cyan-400 to-indigo-500 text-[10px] font-semibold text-zinc-950 flex items-center justify-center">
+            {initials}
+          </span>
+        </button>
+
+        {menuOpen && (
+          <div className="absolute right-0 top-full mt-2 w-60 rounded-lg glass-strong shadow-2xl border border-zinc-800/70 overflow-hidden z-50">
+            <div className="px-3.5 py-3 border-b border-zinc-800/70">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[12.5px] font-medium text-zinc-100 truncate">{user?.name ?? 'Account'}</span>
+                {user && <Badge variant="neutral" size="sm">{user.role}</Badge>}
+              </div>
+              <div className="font-mono text-[10.5px] text-zinc-500 truncate mt-0.5">{user?.email ?? '—'}</div>
+            </div>
+            <button
+              onClick={() => { setMenuOpen(false); setAccountOpen(true); }}
+              className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-[12px] text-zinc-300 hover:bg-zinc-800/60 hover:text-zinc-100 transition-colors"
+            >
+              <Icon name="UserCog" size={14} className="text-zinc-500" />
+              Account settings
+            </button>
+            <button
+              onClick={() => { setMenuOpen(false); onLogout(); }}
+              className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-[12px] text-rose-300 hover:bg-rose-500/10 transition-colors border-t border-zinc-800/70"
+            >
+              <Icon name="LogOut" size={14} />
+              Sign out
+            </button>
+          </div>
+        )}
+      </div>
+
+      {user && <AccountModal open={accountOpen} onClose={() => setAccountOpen(false)} user={user} onSaved={onAccountSaved} />}
     </header>
   );
 }

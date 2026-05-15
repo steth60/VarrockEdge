@@ -47,9 +47,14 @@ export default function App() {
   return (
     <div className="app-bg h-screen overflow-hidden flex flex-col">
       <div className="flex flex-1 min-h-0">
-        <Sidebar tweaks={tweaks} user={auth.user} onLogout={auth.logout} />
+        <Sidebar tweaks={tweaks} user={auth.user} />
         <main className="flex-1 min-w-0 flex flex-col min-h-0">
-          <Header onOpenPalette={() => setPaletteOpen(true)} />
+          <Header
+            onOpenPalette={() => setPaletteOpen(true)}
+            user={auth.user}
+            onLogout={auth.logout}
+            onAccountSaved={auth.refresh}
+          />
           <div className="flex-1 overflow-auto min-h-0">
             <div className="px-6 py-5">
               <Routes>
