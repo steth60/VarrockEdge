@@ -30,6 +30,9 @@ async function main() {
       passwordHash,
       role: 'Owner',
       status: 'active',
+      // Force the operator to set a real password on first sign-in — the
+      // install-time default must never remain usable.
+      mustChangePassword: true,
     }).run();
     log.info({ email: 'admin@varrok.local' }, 'seeded admin user');
   }
