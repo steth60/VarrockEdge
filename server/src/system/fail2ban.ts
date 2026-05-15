@@ -1,6 +1,7 @@
 import { exec } from './exec';
 import { config } from '../config';
 import { log } from '../logger';
+import { assertSafeArg, assertMatches, IPV4 } from '../validators';
 
 export interface Ban {
   ip: string;
@@ -30,6 +31,7 @@ async function listJails(): Promise<string[]> {
 async function bannedInJail(jail: string): Promise<string[]> {
   if (!config.onLinux) return MOCK_BANS.filter(b => b.jail === jail).map(b => b.ip);
   try {
+    assertSafeArg(jail, 'jail');
     const r = await exec('fail2ban-client', ['status', jail], { allowFailure: true });
     if (r.code !== 0) return [];
     const m = /Banned IP list:\s*(.*)$/m.exec(r.stdout);
@@ -56,6 +58,10 @@ export async function banIp(ip: string, jail = 'sshd'): Promise<void> {
     log.info({ ip, jail, dryRun: true }, 'ban.add');
     return;
   }
+  // Both values reach fail2ban-client as root — reject flag-like jail names
+  // and anything that is not a literal IPv4 address.
+  assertSafeArg(jail, 'jail');
+  assertMatches(ip, IPV4, 'ip');
   await exec('fail2ban-client', ['set', jail, 'banip', ip]);
 }
 
