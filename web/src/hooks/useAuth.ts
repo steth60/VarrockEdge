@@ -6,6 +6,8 @@ export interface AuthUser {
   email: string;
   name: string;
   role: string;
+  /** Set on the seeded admin until a real password is chosen. */
+  mustChangePassword?: boolean;
 }
 
 export function useAuth() {
