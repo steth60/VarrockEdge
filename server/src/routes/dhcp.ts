@@ -1,10 +1,10 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { db } from '../db/client';
-import { dhcpReservations, networks } from '../db/schema';
+import { dhcpReservations, networks, dnsRecords, flowTopClients } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { parseLeases, reload } from '../system/dnsmasq';
-import { scanLan } from '../system/scan';
+import { scanLan, reachableIps } from '../system/scan';
 import { getDefaultNetwork, ipInSubnet, applyNetworks } from '../system/network';
 
 const router = Router();
@@ -21,7 +21,74 @@ router.get('/leases', (_req, res) => {
 });
 
 router.get('/reservations', (_req, res) => {
-  res.json({ reservations: db.select().from(dhcpReservations).all() });
+  const nets = db.select().from(networks).all();
+  const reservations = db.select().from(dhcpReservations).all().map(r => {
+    const net = nets.find(n => ipInSubnet(r.ip, n.subnet));
+    return { ...r, networkName: net?.name ?? null, vlanId: net?.vlanId ?? null };
+  });
+  res.json({ reservations });
+});
+
+export interface DhcpClient {
+  hostname: string;
+  ip: string;
+  mac: string;
+  networkId: number | null;
+  networkName: string | null;
+  vlanId: number | null;
+  leaseType: 'dynamic' | 'fixed';
+  status: 'online' | 'offline';
+  expiresAt: number | null;
+  localDns: string | null;
+  traffic1h: number | null;   // bytes seen by conntrack over the last hour
+}
+
+// Unified client list — every DHCP lease + every reservation, merged on MAC,
+// annotated with network, status, local DNS and recent traffic.
+router.get('/clients', (_req, res) => {
+  const nets = db.select().from(networks).all();
+  const dns = db.select().from(dnsRecords).all();
+  const flows = db.select().from(flowTopClients).where(eq(flowTopClients.window, '1h')).all();
+  const live = reachableIps();
+  const flowByIp = new Map(flows.map(f => [f.srcIp, f.bytes]));
+  const netOf = (ip: string) => nets.find(n => ipInSubnet(ip, n.subnet));
+  const dnsOf = (ip: string) => dns.find(r => r.target === ip)?.host ?? null;
+
+  const byMac = new Map<string, DhcpClient>();
+  // Reservations first — these are the "fixed" clients.
+  for (const r of db.select().from(dhcpReservations).all()) {
+    const net = netOf(r.ip);
+    byMac.set(r.mac.toLowerCase(), {
+      hostname: r.hostname, ip: r.ip, mac: r.mac.toLowerCase(),
+      networkId: net?.id ?? null, networkName: net?.name ?? null, vlanId: net?.vlanId ?? null,
+      leaseType: 'fixed', status: 'offline', expiresAt: null,
+      localDns: dnsOf(r.ip), traffic1h: flowByIp.get(r.ip) ?? null,
+    });
+  }
+  // Active leases — fill in dynamic clients, and the live IP/expiry for fixed ones.
+  for (const l of parseLeases()) {
+    const mac = l.mac.toLowerCase();
+    const existing = byMac.get(mac);
+    if (existing) {
+      existing.ip = l.ip;
+      existing.expiresAt = l.expiresAt;
+      existing.localDns = dnsOf(l.ip);
+      existing.traffic1h = flowByIp.get(l.ip) ?? existing.traffic1h;
+    } else {
+      const net = netOf(l.ip);
+      byMac.set(mac, {
+        hostname: l.hostname, ip: l.ip, mac,
+        networkId: net?.id ?? null, networkName: net?.name ?? null, vlanId: net?.vlanId ?? null,
+        leaseType: 'dynamic', status: 'offline', expiresAt: l.expiresAt,
+        localDns: dnsOf(l.ip), traffic1h: flowByIp.get(l.ip) ?? null,
+      });
+    }
+  }
+  // Online = a complete ARP entry, or recent conntrack activity.
+  for (const c of byMac.values()) {
+    c.status = (live.has(c.ip) || flowByIp.has(c.ip)) ? 'online' : 'offline';
+  }
+  res.json({ clients: [...byMac.values()] });
 });
 
 const macRe = /^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$/;

@@ -56,6 +56,8 @@ export function getDefaultNetwork(): Network | undefined {
 export async function ensureNetworkIface(n: Network): Promise<void> {
   if (!n.vlanId) return;
   const dev = vlanIfaceName(n);
+  // The VLAN child carries no traffic if its parent is down — bring it up first.
+  await exec('ip', ['link', 'set', n.iface, 'up'], { allowFailure: true });
   const present = await exec('ip', ['link', 'show', dev], { allowFailure: true });
   if (present.code !== 0) {
     await exec('ip', ['link', 'add', 'link', n.iface, 'name', dev, 'type', 'vlan', 'id', String(n.vlanId)], { allowFailure: true });
@@ -123,12 +125,32 @@ export interface NetworkWithStatus extends Network {
   leasesUsed: number;
   leasesTotal: number;
   leasesAvailable: number;
+  configWarning: string | null;
+}
+
+/** Flag a network whose addressing is internally inconsistent — the misconfig
+ *  that silently breaks DHCP (e.g. a subnet that doesn't match the interface). */
+function configWarning(n: Network, ifaceAddr: string | undefined): string | null {
+  if (!ipInSubnet(n.gateway, n.subnet)) {
+    return `gateway ${n.gateway} is outside the subnet ${n.subnet}`;
+  }
+  if (n.dhcpEnabled && (!ipInSubnet(n.dhcpStart, n.subnet) || !ipInSubnet(n.dhcpEnd, n.subnet))) {
+    return `DHCP range is outside the subnet ${n.subnet}`;
+  }
+  if (ifaceAddr) {
+    const ip = ifaceAddr.split('/')[0]!;
+    if (!ipInSubnet(ip, n.subnet)) {
+      return `interface ${vlanIfaceName(n)} has ${ifaceAddr}, which is not in ${n.subnet}`;
+    }
+  }
+  return null;
 }
 
 export async function listNetworks(): Promise<NetworkWithStatus[]> {
   const rows = db.select().from(networks).all();
   const leases = parseLeases();
   let linkState = new Map<string, boolean>();
+  let ifaceAddrs = new Map<string, string>();
   if (config.onLinux) {
     try {
       const live = await exec('ip', ['-o', 'link', 'show'], { allowFailure: true });
@@ -136,7 +158,12 @@ export async function listNetworks(): Promise<NetworkWithStatus[]> {
         const m = /^\d+:\s+([^:@\s]+).*\sstate\s+(\S+)/.exec(line);
         if (m) linkState.set(m[1]!, m[2] === 'UP' || /\bUP\b/.test(line));
       }
-    } catch { /* leave map empty */ }
+      const addrs = await exec('ip', ['-o', '-4', 'addr', 'show'], { allowFailure: true });
+      for (const line of addrs.stdout.split('\n')) {
+        const m = /^\d+:\s+(\S+)\s+inet\s+(\d{1,3}(?:\.\d{1,3}){3}\/\d{1,2})/.exec(line);
+        if (m && !ifaceAddrs.has(m[1]!)) ifaceAddrs.set(m[1]!, m[2]!);
+      }
+    } catch { /* leave maps empty */ }
   }
   return rows.map(n => {
     const dev = vlanIfaceName(n);
@@ -152,6 +179,7 @@ export async function listNetworks(): Promise<NetworkWithStatus[]> {
       leasesUsed: used,
       leasesTotal: total,
       leasesAvailable: Math.max(0, total - used),
+      configWarning: configWarning(n, ifaceAddrs.get(dev)),
     };
   });
 }

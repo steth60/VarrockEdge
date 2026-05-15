@@ -177,7 +177,7 @@ iptables -t nat -C POSTROUTING -o "$WAN_IFACE" -j MASQUERADE 2>/dev/null \
 # inbound on the WAN; drop everything else arriving on the WAN.
 ipt4 -i lo -j ACCEPT
 ipt4 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-ipt4 -i "$LAN_IFACE" -j ACCEPT
+ipt4 -i "${LAN_IFACE}+" -j ACCEPT
 ipt4 -i "$WAN_IFACE" -p udp --dport 51820 -j ACCEPT
 ipt4 -i "$WAN_IFACE" -j DROP
 iptables-save > /etc/iptables/rules.v4 || true
@@ -188,7 +188,7 @@ if command -v ip6tables >/dev/null 2>&1 && ip6tables -L >/dev/null 2>&1; then
   ipt6 -i lo -j ACCEPT
   ipt6 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
   ipt6 -p ipv6-icmp -j ACCEPT
-  ipt6 -i "$LAN_IFACE" -j ACCEPT
+  ipt6 -i "${LAN_IFACE}+" -j ACCEPT
   ipt6 -i "$WAN_IFACE" -p udp --dport 51820 -j ACCEPT
   ipt6 -i "$WAN_IFACE" -j DROP
   ip6tables-save > /etc/iptables/rules.v6 || true

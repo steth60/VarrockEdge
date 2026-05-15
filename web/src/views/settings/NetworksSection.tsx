@@ -112,6 +112,11 @@ export function NetworksSection() {
                       <span className="text-zinc-100">{n.name}</span>
                       {n.isDefault && <Badge variant="neutral" size="sm">default</Badge>}
                       {n.upnpAllowed && <Badge variant="warn" size="sm">UPnP</Badge>}
+                      {n.configWarning && (
+                        <span title={n.configWarning} className="inline-flex">
+                          <Icon name="AlertTriangle" size={13} className="text-amber-400" />
+                        </span>
+                      )}
                     </span>
                   </td>
                   <td className="py-3 pr-4 font-mono text-zinc-400">{n.vlanId ?? '—'}</td>

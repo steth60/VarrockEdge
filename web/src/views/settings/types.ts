@@ -20,6 +20,7 @@ export interface VNetwork {
   leasesUsed: number;
   leasesTotal: number;
   leasesAvailable: number;
+  configWarning: string | null;
 }
 
 export interface WanLink {

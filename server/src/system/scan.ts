@@ -1,9 +1,30 @@
+import fs from 'node:fs';
 import { exec } from './exec';
 import { config } from '../config';
 import { db } from '../db/client';
 import { dhcpReservations, dhcpScope } from '../db/schema';
 import { parseLeases } from './dnsmasq';
 import { log } from '../logger';
+
+/**
+ * Passive liveness check — the IPs the kernel currently has a *complete* ARP
+ * entry for (flags 0x2). No active sweep; just reads /proc/net/arp. Used to
+ * mark DHCP clients online/offline cheaply.
+ */
+export function reachableIps(): Set<string> {
+  if (!config.onLinux) return new Set(['10.0.0.5', '10.0.0.6', '10.0.0.30']);
+  const set = new Set<string>();
+  try {
+    const raw = fs.readFileSync('/proc/net/arp', 'utf8');
+    for (const line of raw.split('\n').slice(1)) {
+      const p = line.trim().split(/\s+/);
+      // IP address | HW type | Flags | HW address | Mask | Device
+      if (p.length < 4) continue;
+      if (p[0] && p[2] === '0x2' && p[3] && p[3] !== '00:00:00:00:00:00') set.add(p[0]);
+    }
+  } catch { /* arp table unavailable */ }
+  return set;
+}
 
 export interface DiscoveredHost {
   ip: string;
