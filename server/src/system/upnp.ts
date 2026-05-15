@@ -8,6 +8,7 @@ import { networks, settings } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { action } from './systemd';
 import { log } from '../logger';
+import { noNewline } from '../validators';
 
 const CONF_DIR = config.onLinux ? '/etc/miniupnpd' : path.join(config.configDir, 'miniupnpd');
 const CONF_FILE = path.join(CONF_DIR, 'miniupnpd.conf');
@@ -47,7 +48,7 @@ export function renderConfig(): string {
   const nets = allowedNetworks();
   const lines = [
     '# Managed by VarrokEdge — do not edit by hand.',
-    `ext_ifname=${config.wanIface}`,
+    `ext_ifname=${noNewline(config.wanIface, 'wanIface')}`,
     'enable_upnp=yes',
     'enable_natpmp=yes',
     'secure_mode=yes',          // a client may only map a port to its OWN ip
@@ -60,16 +61,16 @@ export function renderConfig(): string {
     'clean_ruleset_interval=600',
   ];
   // Listen only on the VLAN interfaces that opted in.
-  for (const n of nets) lines.push(`listening_ip=${vlanIface(n)}`);
+  for (const n of nets) lines.push(`listening_ip=${noNewline(vlanIface(n), 'iface')}`);
   // Permit non-privileged ports to opted-in subnets only; deny everything else.
-  for (const n of nets) lines.push(`allow 1024-65535 ${n.subnet} 1024-65535`);
+  for (const n of nets) lines.push(`allow 1024-65535 ${noNewline(n.subnet, 'subnet')} 1024-65535`);
   lines.push('deny 0-65535 0.0.0.0/0 0-65535');
   return lines.join('\n') + '\n';
 }
 
 export function writeConfig(): void {
-  if (!fs.existsSync(CONF_DIR)) fs.mkdirSync(CONF_DIR, { recursive: true });
-  fs.writeFileSync(CONF_FILE, renderConfig(), { mode: 0o644 });
+  if (!fs.existsSync(CONF_DIR)) fs.mkdirSync(CONF_DIR, { recursive: true, mode: 0o750 });
+  fs.writeFileSync(CONF_FILE, renderConfig(), { mode: 0o640 });
   log.info({ CONF_FILE }, 'miniupnpd.write');
 }
 
