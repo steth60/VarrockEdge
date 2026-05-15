@@ -4,8 +4,14 @@ import { db } from '../db/client';
 import { fwDnat, fwSnat, fwRules } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { applyDnat, applySnat, applyRule, persist, dnatHits } from '../system/iptables';
+import { zIp, zCidr, zIface, zComment } from '../validators';
 
 const router = Router();
+
+// A firewall source may be a single host or a CIDR block.
+const zSource = z.union([zIp, zCidr]);
+// A destination port or an inclusive range, e.g. "443" or "8000:8100".
+const zDport = z.string().regex(/^\d{1,5}(:\d{1,5})?$/, 'expected a port or port range');
 
 // ─── DNAT ────────────────────────────────────────────────────────────
 router.get('/dnat', async (_req, res) => {
@@ -22,9 +28,9 @@ router.get('/dnat', async (_req, res) => {
 const dnatSchema = z.object({
   srcPort: z.number().int().min(1).max(65535),
   proto: z.enum(['tcp', 'udp', 'both']).default('tcp'),
-  destIp: z.string().min(1),
+  destIp: zIp,
   destPort: z.number().int().min(1).max(65535),
-  comment: z.string().optional(),
+  comment: zComment.optional(),
 });
 
 router.post('/dnat', async (req, res) => {
@@ -52,11 +58,11 @@ router.get('/snat', (_req, res) => {
 });
 
 const snatSchema = z.object({
-  source: z.string().min(1),
-  outIface: z.string().min(1).default('eth0'),
+  source: zCidr,
+  outIface: zIface.default('eth0'),
   mode: z.enum(['MASQUERADE', 'SNAT']).default('MASQUERADE'),
-  toSource: z.string().nullable().optional(),
-  comment: z.string().optional(),
+  toSource: zIp.nullable().optional(),
+  comment: zComment.optional(),
 });
 
 router.post('/snat', async (req, res) => {
@@ -93,10 +99,10 @@ router.get('/rules', (_req, res) => {
 const ruleSchema = z.object({
   chain: z.enum(['INPUT', 'FORWARD', 'OUTPUT']),
   action: z.enum(['ACCEPT', 'DROP', 'REJECT']),
-  proto: z.string().default('all'),
-  source: z.string().nullable().optional(),
-  dport: z.string().nullable().optional(),
-  comment: z.string().optional(),
+  proto: z.enum(['all', 'tcp', 'udp', 'icmp']).default('all'),
+  source: zSource.nullable().optional(),
+  dport: zDport.nullable().optional(),
+  comment: zComment.optional(),
 });
 
 router.post('/rules', async (req, res) => {
