@@ -3,7 +3,24 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { marked } from 'marked';
 
+// marked v14 does not sanitize HTML. Strip all raw HTML so an embedded
+// <script> or `onerror=` in a .md file cannot execute in an authenticated
+// admin's browser — the docs viewer shares an origin and session cookie with
+// the whole control plane.
+marked.use({ renderer: { html: () => '' } });
+
+// Strict CSP for every docs response — the page needs only its own inline
+// <style> block and images; no scripts at all (this also blocks javascript:
+// URLs in markdown links).
+const DOCS_CSP =
+  "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; font-src 'self'; base-uri 'none'";
+
 const router = Router();
+
+router.use((_req, res, next) => {
+  res.setHeader('Content-Security-Policy', DOCS_CSP);
+  next();
+});
 
 // docs/ lives at the project root, two levels up from server/dist.
 const DOCS_DIR = path.resolve(__dirname, '../../../docs');
