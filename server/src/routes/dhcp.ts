@@ -6,6 +6,7 @@ import { eq } from 'drizzle-orm';
 import { parseLeases, reload } from '../system/dnsmasq';
 import { scanLan, reachableIps } from '../system/scan';
 import { getDefaultNetwork, ipInSubnet, applyNetworks } from '../system/network';
+import { zIp, zMac, zLease, zComment, zIpList, zHostname, HOSTNAME } from '../validators';
 
 const router = Router();
 
@@ -91,15 +92,12 @@ router.get('/clients', (_req, res) => {
   res.json({ clients: [...byMac.values()] });
 });
 
-const macRe = /^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$/;
-const ipRe = /^(\d{1,3}\.){3}\d{1,3}$/;
-
 const reservationSchema = z.object({
-  hostname: z.string().min(1).max(63),
-  mac: z.string().regex(macRe),
-  ip: z.string().regex(ipRe),
-  lease: z.string().default('24h'),
-  comment: z.string().optional(),
+  hostname: z.string().min(1).max(63).regex(HOSTNAME, 'invalid hostname'),
+  mac: zMac,
+  ip: zIp,
+  lease: zLease.default('24h'),
+  comment: zComment.optional(),
   networkId: z.number().int().nullable().optional(),
 });
 
@@ -149,12 +147,12 @@ router.get('/scope', (_req, res) => {
 });
 
 const scopeSchema = z.object({
-  rangeStart: z.string().regex(ipRe),
-  rangeEnd: z.string().regex(ipRe),
-  leaseTime: z.string(),
-  gateway: z.string().regex(ipRe),
-  dnsServers: z.string(),
-  domain: z.string(),
+  rangeStart: zIp,
+  rangeEnd: zIp,
+  leaseTime: zLease,
+  gateway: zIp,
+  dnsServers: zIpList,
+  domain: zHostname,
 });
 
 router.patch('/scope', async (req, res) => {
