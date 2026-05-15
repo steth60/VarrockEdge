@@ -14,6 +14,11 @@ export async function applyDnat(row: typeof fwDnat.$inferSelect, op: 'A' | 'D' =
   assertSafeArg(config.wanIface, 'wanIface');
   assertSafeArg(config.lanIface, 'lanIface');
   assertSafeArg(row.destIp, 'destIp');
+  // Backstop to the route check — never DNAT a WAN port to the appliance's own
+  // management plane / a loopback service.
+  if (op === 'A' && (row.destIp === config.bindHost || row.destIp.startsWith('127.') || row.destIp === '::1')) {
+    throw new Error('refusing to DNAT to the appliance itself');
+  }
   for (const p of (row.proto === 'both' ? ['tcp', 'udp'] : [row.proto])) {
     await exec('iptables', [
       '-t', 'nat', `-${op}`, 'PREROUTING',
