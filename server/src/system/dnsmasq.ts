@@ -6,6 +6,7 @@ import { db } from '../db/client';
 import { dhcpReservations, dnsRecords, networks } from '../db/schema';
 import { log } from '../logger';
 import { noNewline } from '../validators';
+import { atomicWrite } from './fsutil';
 
 const LEASES_FILE = '/var/lib/misc/dnsmasq.leases';
 const CONF_DIR = config.onLinux ? '/etc/dnsmasq.d' : path.join(config.configDir, 'dnsmasq.d');
@@ -14,7 +15,7 @@ const STATIC_CONF = path.join(CONF_DIR, 'static.conf');
 const DNS_CONF = path.join(CONF_DIR, 'varrok-dns.conf');
 
 function ensureDir() {
-  if (!fs.existsSync(CONF_DIR)) fs.mkdirSync(CONF_DIR, { recursive: true });
+  if (!fs.existsSync(CONF_DIR)) fs.mkdirSync(CONF_DIR, { recursive: true, mode: 0o755 });
 }
 
 export function renderMainConf(): string {
@@ -86,9 +87,11 @@ export function renderDnsConf(): string {
 
 export async function writeConfigs() {
   ensureDir();
-  fs.writeFileSync(MAIN_CONF, renderMainConf());
-  fs.writeFileSync(STATIC_CONF, renderStaticConf());
-  fs.writeFileSync(DNS_CONF, renderDnsConf());
+  // 0640: dnsmasq runs as root and reads these; they should not be
+  // world-readable (they expose the full DHCP/DNS topology).
+  atomicWrite(MAIN_CONF, renderMainConf(), 0o640);
+  atomicWrite(STATIC_CONF, renderStaticConf(), 0o640);
+  atomicWrite(DNS_CONF, renderDnsConf(), 0o640);
   log.info({ MAIN_CONF, STATIC_CONF, DNS_CONF }, 'dnsmasq.write');
 }
 
