@@ -30,8 +30,7 @@ import wanRoutes from './routes/wan';
 import networkRoutes from './routes/networks';
 import upnpRoutes from './routes/upnp';
 import { startDetector } from './system/detector';
-import { syncNetworks } from './system/network';
-import { applyUpnp } from './system/upnp';
+import { applyNetworks } from './system/network';
 import { ensureServerAsync } from './system/wireguard';
 import { startConntrackSampler } from './system/conntrack';
 import { startLatencyProbe } from './system/latencyProbe';
@@ -62,8 +61,9 @@ async function main() {
 
   runMigrations();
   await ensureServerAsync().catch(err => log.warn({ err }, 'wg init skipped'));
-  await syncNetworks().catch(err => log.warn({ err }, 'network sync skipped'));
-  await applyUpnp().catch(err => log.warn({ err }, 'upnp apply skipped'));
+  // Reconcile VLAN interfaces, regenerate + restart dnsmasq, and reconcile
+  // miniupnpd — so a fresh boot always converges the daemons to the DB.
+  await applyNetworks().catch(err => log.warn({ err }, 'network apply skipped'));
   startDetector();
   startConntrackSampler();
   startLatencyProbe();

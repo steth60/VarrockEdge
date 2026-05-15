@@ -86,7 +86,11 @@ export async function writeConfigs() {
 
 export async function reload() {
   await writeConfigs();
-  return exec('systemctl', ['reload', 'dnsmasq'], { allowFailure: true });
+  // Must be `restart`, not `reload`: dnsmasq's SIGHUP only re-reads /etc/hosts
+  // and resolv.conf — it does NOT re-evaluate `interface=` or `dhcp-range=`
+  // (nor conf-file includes). New VLAN networks / scopes / reservations only
+  // take effect on a full restart.
+  return exec('systemctl', ['restart', 'dnsmasq'], { allowFailure: true });
 }
 
 export interface Lease {
