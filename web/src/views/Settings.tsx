@@ -182,7 +182,7 @@ function Updates() {
       const resp = await fetch('/api/system/update/run', {
         method: 'POST',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Varrok-CSRF': '1' },
         body: JSON.stringify({ installMissing }),
       });
       if (!resp.ok || !resp.body) {

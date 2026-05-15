@@ -98,7 +98,7 @@ export function Services() {
       const resp = await fetch('/api/system/apps/install', {
         method: 'POST',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Varrok-CSRF': '1' },
         body: JSON.stringify({}),
       });
       if (!resp.ok || !resp.body) {
