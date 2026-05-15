@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import { exec } from './exec';
 import { config } from '../config';
 import { db } from '../db/client';
-import { wgPeers, wgServer } from '../db/schema';
+import { wgPeers, wgServer, networks } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { log } from '../logger';
 import { noNewline, assertMatches, CIDR, CIDR_LIST, WG_KEY, ENDPOINT } from '../validators';
@@ -253,7 +253,9 @@ export async function addPeer(input: AddPeerInput) {
       remoteEndpoint: input.remoteEndpoint ?? null,
     }).returning().get();
     await writeServerConfig();
-    await reload();
+    // Site peers carry per-peer PostUp MASQUERADE rules — only a full tunnel
+    // restart re-runs the [Interface] section; `wg syncconf` (reload) won't.
+    await restart();
     return row;
   }
 
@@ -329,16 +331,33 @@ export function renderRemotePeerSnippet(peerId: number): string {
   } else {
     lines.push(`Endpoint = YOUR.EDGE.IP:${Number(server.listenPort)}  # set publicEndpoint in Tunnel settings first`);
   }
-  // Advertise our LAN as what they should route to via this peer.
-  lines.push(`AllowedIPs = 10.0.0.0/24`);
+  // Advertise the tunnel + every VarrokEdge network so the remote side routes
+  // them all through this link.
+  lines.push(`AllowedIPs = ${noNewline(localCidrs(), 'localCidrs')}`);
   lines.push(`PersistentKeepalive = ${Number(peer.keepalive)}`);
   return lines.join('\n') + '\n';
 }
 
 export async function removePeer(id: number) {
+  const peer = db.select().from(wgPeers).where(eq(wgPeers.id, id)).get();
   db.delete(wgPeers).where(eq(wgPeers.id, id)).run();
   await writeServerConfig();
-  await reload();
+  // A site peer's PostUp rules only clear on a full tunnel restart.
+  if (peer?.kind === 'site') await restart();
+  else await reload();
+}
+
+/** Everything reachable behind VarrokEdge over the tunnel: the WG tunnel CIDR
+ *  plus every enabled network's subnet. The single source of truth for the
+ *  AllowedIPs handed to peers — replaces a stale hardcoded 10.0.0.0/24. */
+function localCidrs(): string {
+  const server = ensureServer();
+  const cidrs: string[] = [];
+  if (server?.tunnelCidr) cidrs.push(server.tunnelCidr);
+  for (const n of db.select().from(networks).all()) {
+    if (n.enabled && !cidrs.includes(n.subnet)) cidrs.push(n.subnet);
+  }
+  return cidrs.join(', ');
 }
 
 export function renderPeerConf(peerId: number): string {
@@ -358,7 +377,13 @@ export function renderPeerConf(peerId: number): string {
   ];
   if (peer.presharedKey) lines.push(`PresharedKey = ${noNewline(peer.presharedKey, 'peer presharedKey')}`);
   lines.push(`Endpoint = ${noNewline(server.publicEndpoint ?? 'YOUR.PUBLIC.IP', 'publicEndpoint')}:${Number(server.listenPort)}`);
-  lines.push(`AllowedIPs = ${noNewline(server.defaultAllowedIps, 'defaultAllowedIps')}`);
+  // Honour an explicit admin value (e.g. 0.0.0.0/0 full tunnel); otherwise
+  // route the appliance's real networks — the stale 10.0.0.0/24 default is
+  // treated as "unset".
+  const rwAllowed = server.defaultAllowedIps && server.defaultAllowedIps !== '10.0.0.0/24'
+    ? server.defaultAllowedIps
+    : localCidrs();
+  lines.push(`AllowedIPs = ${noNewline(rwAllowed, 'AllowedIPs')}`);
   lines.push(`PersistentKeepalive = ${Number(peer.keepalive)}`);
   return lines.join('\n') + '\n';
 }
@@ -371,6 +396,7 @@ export function renderServerConfig(): string {
   // in any interpolated value below would inject an arbitrary `PostUp` —
   // every value is therefore newline-checked, and the render fails closed.
   const wan = noNewline(config.wanIface, 'wanIface');
+  const lan = noNewline(config.lanIface, 'lanIface');
   const tunnelPrefix = server.tunnelCidr.split('/')[1] ?? '24';
   const addr = `${server.tunnelCidr.split('/')[0]?.replace(/\.0$/, '.1')}/${tunnelPrefix}`;
   const lines = [
@@ -380,9 +406,21 @@ export function renderServerConfig(): string {
     `Address = ${noNewline(addr, 'tunnelCidr')}`,
     `ListenPort = ${Number(server.listenPort)}`,
     `MTU = ${Number(server.mtu)}`,
-    `PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o ${wan} -j MASQUERADE`,
-    `PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o ${wan} -j MASQUERADE`,
+    // Forward both ways across the tunnel + masquerade tunnel→WAN egress.
+    `PostUp = sysctl -w net.ipv4.ip_forward=1; iptables -A FORWARD -i wg0 -j ACCEPT; iptables -A FORWARD -o wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o ${wan} -j MASQUERADE`,
+    `PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o ${wan} -j MASQUERADE`,
   ];
+  // Per site-to-site peer: SNAT that remote subnet's traffic as it enters any
+  // VarrokEdge LAN interface (eth1, eth1.2, … — the `+` wildcard covers VLAN
+  // children), so LAN hosts reply to the appliance and conntrack routes it
+  // back through the tunnel — no static routes needed on the LAN hosts.
+  for (const p of peers) {
+    if (p.kind === 'site' && p.remoteSubnet) {
+      const rs = noNewline(p.remoteSubnet, 'remoteSubnet');
+      lines.push(`PostUp = iptables -t nat -A POSTROUTING -s ${rs} -o ${lan}+ -j MASQUERADE`);
+      lines.push(`PostDown = iptables -t nat -D POSTROUTING -s ${rs} -o ${lan}+ -j MASQUERADE`);
+    }
+  }
   for (const p of peers) {
     lines.push('');
     lines.push(`# ${noNewline(p.name, 'peer name')}`);

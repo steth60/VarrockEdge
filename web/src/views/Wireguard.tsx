@@ -325,11 +325,21 @@ interface SitePeer extends Peer { remoteSubnet: string | null }
 
 function SiteToSite() {
   const [sites, setSites] = useState<SitePeer[]>([]);
+  const [localSubnets, setLocalSubnets] = useState<string>('—');
   const [addOpen, setAddOpen] = useState(false);
   const [draft, setDraft] = useState({ name: '', role: 'initiator' as 'initiator' | 'responder', remoteSubnet: '', remoteEndpoint: '', remotePublicKey: '', presharedKey: '', keepalive: 25 });
 
   const reload = () => api.get<{ sites: SitePeer[] }>('/api/wireguard/sites').then(r => setSites(r.sites)).catch(() => {});
   useEffect(() => { reload(); const t = setInterval(reload, 15_000); return () => clearInterval(t); }, []);
+  // The "Local" subnets advertised across every site link = the real networks.
+  useEffect(() => {
+    api.get<{ networks: Array<{ subnet: string; enabled: boolean }> }>('/api/networks')
+      .then(r => {
+        const subs = r.networks.filter(n => n.enabled).map(n => n.subnet);
+        setLocalSubnets(subs.length ? subs.join(', ') : '—');
+      })
+      .catch(() => {});
+  }, []);
 
   const submit = async () => {
     if (!draft.name || !draft.remoteSubnet || !draft.remotePublicKey) {
@@ -387,7 +397,7 @@ function SiteToSite() {
               <div className="flex items-center gap-2 mb-4">
                 <div className="flex-1 p-2.5 rounded-lg bg-zinc-900/60 border border-zinc-800/70">
                   <div className="text-[10px] uppercase tracking-[0.08em] text-zinc-500">Local</div>
-                  <code className="font-mono text-[11.5px] text-zinc-100 block mt-0.5">10.0.0.0/24</code>
+                  <code className="font-mono text-[11.5px] text-zinc-100 block mt-0.5">{localSubnets}</code>
                 </div>
                 <div className="flex flex-col items-center gap-0.5">
                   <div className="relative w-12 h-px bg-gradient-to-r from-cyan-500/50 via-cyan-400 to-cyan-500/50">
