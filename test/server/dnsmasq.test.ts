@@ -1,13 +1,21 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { runMigrations } from '../../server/src/db/migrate';
 import { db } from '../../server/src/db/client';
-import { dhcpReservations, dhcpScope, dnsRecords } from '../../server/src/db/schema';
+import { dhcpReservations, dhcpScope, dnsRecords, networks } from '../../server/src/db/schema';
 import { renderMainConf, renderStaticConf, renderDnsConf } from '../../server/src/system/dnsmasq';
 
 beforeAll(() => {
   runMigrations();
   if (db.select().from(dhcpScope).all().length === 0) {
     db.insert(dhcpScope).values({}).run();
+  }
+  if (db.select().from(networks).all().length === 0) {
+    db.insert(networks).values({
+      name: 'Default LAN', vlanId: null, iface: 'eth1', subnet: '10.0.0.0/24',
+      gateway: '10.0.0.1', dhcpEnabled: true, dhcpStart: '10.0.0.50', dhcpEnd: '10.0.0.200',
+      leaseTime: '24h', dnsServers: '10.0.0.1,1.1.1.1', domain: 'varrok.local',
+      purpose: 'corporate', enabled: true, isDefault: true, createdAt: Date.now(),
+    }).run();
   }
 });
 
@@ -19,10 +27,10 @@ describe('dnsmasq config rendering', () => {
     expect(conf).not.toMatch(/interface=eth0/);
   });
 
-  it('renderMainConf includes the configured DHCP range', () => {
+  it('renderMainConf emits a tagged DHCP range per network', () => {
     const conf = renderMainConf();
-    expect(conf).toMatch(/dhcp-range=10\.0\.0\.50,10\.0\.0\.200,24h/);
-    expect(conf).toMatch(/dhcp-option=3,10\.0\.0\.1/);
+    expect(conf).toMatch(/dhcp-range=set:net\d+,10\.0\.0\.50,10\.0\.0\.200,24h/);
+    expect(conf).toMatch(/dhcp-option=tag:net\d+,3,10\.0\.0\.1/);
   });
 
   it('renderStaticConf emits a dhcp-host line per reservation', () => {

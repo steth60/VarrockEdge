@@ -1,5 +1,5 @@
 import { db } from './client';
-import { users, dhcpScope, dnsUpstreams, fwSnat, detectionRules, wanInterfaces } from './schema';
+import { users, dhcpScope, dnsUpstreams, fwSnat, detectionRules, wanInterfaces, networks } from './schema';
 import { hash } from '../auth/password';
 import { config } from '../config';
 import { log } from '../logger';
@@ -38,6 +38,33 @@ async function main() {
   if (scope.length === 0) {
     db.insert(dhcpScope).values({}).run();
     log.info('seeded default DHCP scope');
+  }
+
+  // The default network mirrors the legacy DHCP scope. Migration 0005 moves an
+  // existing scope across on upgrade; on a fresh install seed runs after
+  // migrate, so we create it here from the just-seeded scope row.
+  const nets = db.select().from(networks).all();
+  if (nets.length === 0) {
+    const s = db.select().from(dhcpScope).get()!;
+    const subnet = `${s.gateway.split('.').slice(0, 3).join('.')}.0/24`;
+    db.insert(networks).values({
+      name: 'Default LAN',
+      vlanId: null,
+      iface: config.lanIface,
+      subnet,
+      gateway: s.gateway,
+      dhcpEnabled: true,
+      dhcpStart: s.rangeStart,
+      dhcpEnd: s.rangeEnd,
+      leaseTime: s.leaseTime,
+      dnsServers: s.dnsServers,
+      domain: s.domain,
+      purpose: 'corporate',
+      enabled: true,
+      isDefault: true,
+      createdAt: Date.now(),
+    }).run();
+    log.info('seeded default network');
   }
 
   const ups = db.select().from(dnsUpstreams).all();

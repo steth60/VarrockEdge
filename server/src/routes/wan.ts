@@ -1,12 +1,12 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { listWans, addWan, patchWan, removeWan, wanHistory } from '../system/wan';
+import { listWansDetailed, addWan, patchWan, removeWan, wanHistory } from '../system/wan';
 import { requireRole } from '../auth/middleware';
 
 const router = Router();
 
-router.get('/', (_req, res) => {
-  res.json({ wans: listWans() });
+router.get('/', async (_req, res) => {
+  res.json({ wans: await listWansDetailed() });
 });
 
 const createSchema = z.object({
@@ -15,6 +15,8 @@ const createSchema = z.object({
   role: z.enum(['primary', 'failover', 'snat-only']).optional(),
   priority: z.number().int().min(1).max(1000).optional(),
   healthTarget: z.string().min(1).optional(),
+  isp: z.string().max(48).optional(),
+  wanPort: z.number().int().min(1).max(64).optional(),
 });
 
 router.post('/', requireRole('Owner'), (req, res) => {
@@ -35,6 +37,8 @@ const patchSchema = z.object({
   priority: z.number().int().min(1).max(1000).optional(),
   healthTarget: z.string().optional(),
   enabled: z.boolean().optional(),
+  isp: z.string().max(48).optional(),
+  wanPort: z.number().int().min(1).max(64).optional(),
 });
 
 router.patch('/:id', requireRole('Owner', 'Admin'), (req, res) => {

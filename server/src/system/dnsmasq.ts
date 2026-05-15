@@ -3,7 +3,7 @@ import path from 'node:path';
 import { exec } from './exec';
 import { config } from '../config';
 import { db } from '../db/client';
-import { dhcpReservations, dhcpScope, dnsRecords } from '../db/schema';
+import { dhcpReservations, dnsRecords, networks } from '../db/schema';
 import { log } from '../logger';
 
 const LEASES_FILE = '/var/lib/misc/dnsmasq.leases';
@@ -17,18 +17,31 @@ function ensureDir() {
 }
 
 export function renderMainConf(): string {
-  const scope = db.select().from(dhcpScope).get() ?? {
-    rangeStart: '10.0.0.50', rangeEnd: '10.0.0.200', leaseTime: '24h',
-    gateway: '10.0.0.1', dnsServers: '10.0.0.1,1.1.1.1', domain: 'varrok.local',
-  };
-  return [
-    '# Managed by VarrokEdge — do not edit by hand.',
-    `interface=${config.lanIface}`,
-    'bind-interfaces',
-    `dhcp-range=${scope.rangeStart},${scope.rangeEnd},${scope.leaseTime}`,
-    `dhcp-option=3,${scope.gateway}`,
-    `dhcp-option=6,${scope.dnsServers}`,
-    `domain=${scope.domain}`,
+  const nets = db.select().from(networks).all().filter(n => n.enabled);
+  const lines = ['# Managed by VarrokEdge — do not edit by hand.', 'bind-interfaces'];
+
+  if (nets.length === 0) {
+    // No networks defined — bind the LAN iface so dnsmasq still starts,
+    // but serve no DHCP scope until a network exists.
+    lines.push(`interface=${config.lanIface}`);
+  } else {
+    // One `interface=` line per network's (VLAN) interface.
+    for (const n of nets) {
+      lines.push(`interface=${n.vlanId ? `${n.iface}.${n.vlanId}` : n.iface}`);
+    }
+    // One tagged dhcp-range + options block per DHCP-enabled network.
+    for (const n of nets) {
+      if (!n.dhcpEnabled) continue;
+      const tag = `net${n.id}`;
+      lines.push(`dhcp-range=set:${tag},${n.dhcpStart},${n.dhcpEnd},${n.leaseTime}`);
+      lines.push(`dhcp-option=tag:${tag},3,${n.gateway}`);
+      lines.push(`dhcp-option=tag:${tag},6,${n.dnsServers}`);
+    }
+  }
+
+  const defaultNet = nets.find(n => n.isDefault) ?? nets[0];
+  lines.push(
+    `domain=${defaultNet?.domain ?? 'varrok.local'}`,
     'local=/varrok.local/',
     'expand-hosts',
     'log-queries',
@@ -36,14 +49,18 @@ export function renderMainConf(): string {
     `conf-file=${STATIC_CONF}`,
     `conf-file=${DNS_CONF}`,
     '',
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 export function renderStaticConf(): string {
   const rows = db.select().from(dhcpReservations).all();
   const lines = ['# Static DHCP reservations'];
   for (const r of rows) {
-    lines.push(`dhcp-host=${r.mac},${r.hostname},${r.ip},${r.lease}`);
+    // Reservations carry their network tag so dnsmasq applies the right scope;
+    // a NULL network_id falls through to whichever scope owns the IP.
+    const tag = r.networkId ? `set:net${r.networkId},` : '';
+    lines.push(`dhcp-host=${tag}${r.mac},${r.hostname},${r.ip},${r.lease}`);
   }
   return lines.join('\n') + '\n';
 }

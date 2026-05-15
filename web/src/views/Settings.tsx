@@ -1,11 +1,28 @@
 import { useEffect, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Card, Button, SettingRow, ToggleSwitch, Input, Select, KV, Icon, Badge } from '../components/primitives';
 import { api } from '../api/client';
+import { SettingsOverview } from './settings/SettingsOverview';
+import { NetworksSection } from './settings/NetworksSection';
+import { InternetSection } from './settings/InternetSection';
+import { VpnSection } from './settings/VpnSection';
+import { CyberSecureSection } from './settings/CyberSecureSection';
+import { WifiSection } from './settings/WifiSection';
+import { HaSection } from './settings/HaSection';
 
-const SECTIONS = [
+const FEATURE_SECTIONS = [
+  { id: 'overview',     label: 'Overview',          icon: 'LayoutDashboard' },
+  { id: 'wifi',         label: 'WiFi',              icon: 'Wifi' },
+  { id: 'networks',     label: 'Networks',          icon: 'Network' },
+  { id: 'internet',     label: 'Internet',          icon: 'Globe' },
+  { id: 'vpn',          label: 'VPN',               icon: 'Lock' },
+  { id: 'cybersecure',  label: 'CyberSecure',       icon: 'ShieldCheck' },
+  { id: 'ha',           label: 'High Availability', icon: 'Activity' },
+] as const;
+
+const SYSTEM_SECTIONS = [
   { id: 'general',  label: 'General',        icon: 'Settings' },
-  { id: 'network',  label: 'Network & WAN',  icon: 'Network' },
-  { id: 'security', label: 'Security',       icon: 'ShieldCheck' },
+  { id: 'security', label: 'Login & SSH',    icon: 'KeyRound' },
   { id: 'updates',  label: 'Updates',        icon: 'Download' },
   { id: 'backups',  label: 'Backups',        icon: 'Archive' },
   { id: 'notify',   label: 'Notifications',  icon: 'Bell' },
@@ -13,30 +30,69 @@ const SECTIONS = [
   { id: 'about',    label: 'About',          icon: 'Info' },
 ] as const;
 
+const ALL_SECTIONS = [...FEATURE_SECTIONS, ...SYSTEM_SECTIONS];
+
 export function Settings() {
-  const [section, setSection] = useState<typeof SECTIONS[number]['id']>('general');
+  const loc = useLocation();
+  const navigate = useNavigate();
+  const [query, setQuery] = useState('');
+
+  const seg = loc.pathname.split('/')[2] || 'overview';
+  const section = ALL_SECTIONS.some(s => s.id === seg) ? seg : 'overview';
+  const go = (id: string) => navigate(`/settings/${id}`);
+
+  const match = (s: { label: string }) => !query || s.label.toLowerCase().includes(query.toLowerCase());
+  const features = FEATURE_SECTIONS.filter(match);
+  const systems = SYSTEM_SECTIONS.filter(match);
+
+  const NavButton = ({ s }: { s: { id: string; label: string; icon: string } }) => (
+    <button key={s.id} onClick={() => go(s.id)}
+            className={`w-full flex items-center gap-2.5 h-8 px-3 rounded-md text-[12.5px] font-medium transition-colors ${section === s.id ? 'bg-zinc-800/70 text-zinc-100' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/40'}`}>
+      <Icon name={s.icon} size={13} className={section === s.id ? '' : 'text-zinc-500'} />
+      <span>{s.label}</span>
+    </button>
+  );
+
   return (
     <div className="grid grid-cols-12 gap-6">
       <aside className="col-span-12 md:col-span-3 lg:col-span-2">
-        <nav className="sticky top-4 space-y-0.5">
-          {SECTIONS.map(s => (
-            <button key={s.id} onClick={() => setSection(s.id)}
-                    className={`w-full flex items-center gap-2.5 h-8 px-3 rounded-md text-[12.5px] font-medium transition-colors ${section === s.id ? 'bg-zinc-800/70 text-zinc-100' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/40'}`}>
-              <Icon name={s.icon} size={13} className={section === s.id ? '' : 'text-zinc-500'} />
-              <span>{s.label}</span>
-            </button>
-          ))}
-        </nav>
+        <div className="sticky top-4 space-y-3">
+          <div className="relative">
+            <Icon name="Search" size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500" />
+            <input
+              value={query} onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search Settings"
+              className="w-full h-8 pl-8 pr-3 rounded-md bg-zinc-900/70 border border-zinc-800/70 text-zinc-100 placeholder:text-zinc-600 text-[12px] focus:border-cyan-400/50 transition-colors" />
+          </div>
+          <nav className="space-y-0.5">
+            {features.map(s => <NavButton key={s.id} s={s} />)}
+            {systems.length > 0 && (
+              <div className="pt-2 mt-1 border-t border-zinc-800/60">
+                <div className="px-3 py-1.5 text-[10px] uppercase tracking-[0.1em] text-zinc-600 font-medium">System</div>
+              </div>
+            )}
+            {systems.map(s => <NavButton key={s.id} s={s} />)}
+            {features.length === 0 && systems.length === 0 && (
+              <div className="px-3 py-3 text-[11.5px] text-zinc-600">No matching settings.</div>
+            )}
+          </nav>
+        </div>
       </aside>
       <div className="col-span-12 md:col-span-9 lg:col-span-10 space-y-6">
-        {section === 'general'  && <General />}
-        {section === 'network'  && <Network />}
-        {section === 'security' && <Security />}
-        {section === 'updates'  && <Updates />}
-        {section === 'backups'  && <Backups />}
-        {section === 'notify'   && <Notify />}
-        {section === 'api'      && <ApiPanel />}
-        {section === 'about'    && <About />}
+        {section === 'overview'    && <SettingsOverview onNavigate={go} />}
+        {section === 'wifi'        && <WifiSection />}
+        {section === 'networks'    && <NetworksSection />}
+        {section === 'internet'    && <InternetSection />}
+        {section === 'vpn'         && <VpnSection onManage={() => navigate('/vpn')} />}
+        {section === 'cybersecure' && <CyberSecureSection onManage={() => navigate('/services')} />}
+        {section === 'ha'          && <HaSection />}
+        {section === 'general'     && <General />}
+        {section === 'security'    && <Security />}
+        {section === 'updates'     && <Updates />}
+        {section === 'backups'     && <Backups />}
+        {section === 'notify'      && <Notify />}
+        {section === 'api'         && <ApiPanel />}
+        {section === 'about'       && <About />}
       </div>
     </div>
   );
@@ -62,136 +118,6 @@ function General() {
         <Button variant="primary" icon="Save">Save changes</Button>
       </div>
     </Card>
-  );
-}
-
-interface Wan {
-  id: number; iface: string; label: string; role: string; priority: number; healthTarget: string; enabled: boolean;
-  health: { status: 'up' | 'degraded' | 'down'; rttMs: number | null; lossPct: number | null; ts: number | null };
-}
-
-function Network() {
-  const [wans, setWans] = useState<Wan[]>([]);
-  const [adding, setAdding] = useState(false);
-  const [draft, setDraft] = useState({ iface: '', label: '', role: 'primary', priority: 200, healthTarget: '1.1.1.1' });
-
-  const reload = () => api.get<{ wans: Wan[] }>('/api/wan').then(r => setWans(r.wans)).catch(() => {});
-  useEffect(() => {
-    reload();
-    const t = setInterval(reload, 15_000);
-    return () => clearInterval(t);
-  }, []);
-
-  const submit = async () => {
-    if (!draft.iface || !draft.label) { alert('iface and label required'); return; }
-    try {
-      await api.post('/api/wan', draft);
-      setDraft({ iface: '', label: '', role: 'primary', priority: 200, healthTarget: '1.1.1.1' });
-      setAdding(false);
-      reload();
-    } catch (err: any) { alert(err?.message ?? 'failed'); }
-  };
-
-  const toggle = async (w: Wan) => {
-    try { await api.patch(`/api/wan/${w.id}`, { enabled: !w.enabled }); reload(); }
-    catch (err: any) { alert(err?.message ?? 'failed'); }
-  };
-  const remove = async (w: Wan) => {
-    if (!window.confirm(`Remove ${w.iface}? Default route may change if this is the active WAN.`)) return;
-    try { await api.delete(`/api/wan/${w.id}`); reload(); }
-    catch (err: any) { alert(err?.message ?? 'failed'); }
-  };
-
-  return (
-    <>
-      <Card title="WAN interfaces" subtitle="Multi-WAN failover · health probed every 30s"
-            action={<Button variant="primary" size="sm" icon="Plus" onClick={() => setAdding(true)}>Add WAN</Button>}>
-        <table className="w-full text-[12.5px]">
-          <thead>
-            <tr className="text-left text-[10.5px] uppercase tracking-[0.08em] text-zinc-500 border-b border-zinc-800/70">
-              <th className="font-medium py-2.5">Iface</th>
-              <th className="font-medium py-2.5">Label</th>
-              <th className="font-medium py-2.5">Role</th>
-              <th className="font-medium py-2.5">Prio</th>
-              <th className="font-medium py-2.5">Health target</th>
-              <th className="font-medium py-2.5">Status</th>
-              <th className="font-medium py-2.5">RTT</th>
-              <th className="font-medium py-2.5">Loss</th>
-              <th className="font-medium py-2.5 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-zinc-800/60">
-            {wans.map(w => {
-              const dot = w.health.status === 'up' ? 'bg-emerald-400' : w.health.status === 'degraded' ? 'bg-amber-400' : 'bg-rose-400';
-              return (
-                <tr key={w.id} className="hover:bg-zinc-900/30 group">
-                  <td className="py-3 font-mono text-zinc-100">{w.iface}</td>
-                  <td className="py-3 text-zinc-300">{w.label}</td>
-                  <td className="py-3"><Badge variant={w.role === 'primary' ? 'accent' : w.role === 'failover' ? 'info' : 'neutral'} size="sm">{w.role}</Badge></td>
-                  <td className="py-3 font-mono text-zinc-400">{w.priority}</td>
-                  <td className="py-3 font-mono text-cyan-300">{w.healthTarget}</td>
-                  <td className="py-3">
-                    <span className="inline-flex items-center gap-2 text-[11.5px]">
-                      <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
-                      <span className={w.health.status === 'up' ? 'text-emerald-300' : w.health.status === 'degraded' ? 'text-amber-300' : 'text-rose-300'}>{w.health.status}</span>
-                    </span>
-                  </td>
-                  <td className="py-3 font-mono text-zinc-400">{w.health.rttMs?.toFixed(0) ?? '—'}{w.health.rttMs !== null ? 'ms' : ''}</td>
-                  <td className="py-3 font-mono text-zinc-400">{w.health.lossPct?.toFixed(0) ?? '—'}%</td>
-                  <td className="py-3 text-right">
-                    <div className="inline-flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <Button variant="ghost" size="sm" icon={w.enabled ? 'Pause' : 'Play'} onClick={() => toggle(w)}>{w.enabled ? 'Disable' : 'Enable'}</Button>
-                      <Button variant="danger" size="sm" icon="Trash2" onClick={() => remove(w)}>Remove</Button>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-            {wans.length === 0 && <tr><td colSpan={9} className="py-8 text-center text-[12px] text-zinc-600">no WANs configured</td></tr>}
-          </tbody>
-        </table>
-      </Card>
-
-      {adding && (
-        <Card title="Add WAN interface" subtitle="Must be configured at the OS / Proxmox layer first">
-          <div className="grid grid-cols-2 gap-4">
-            <label className="block">
-              <span className="text-[11px] text-zinc-400">Interface</span>
-              <Input mono placeholder="eth0:1" value={draft.iface} onChange={(e) => setDraft({ ...draft, iface: e.target.value })} className="mt-1 w-full" />
-            </label>
-            <label className="block">
-              <span className="text-[11px] text-zinc-400">Label</span>
-              <Input placeholder="Mobile 4G" value={draft.label} onChange={(e) => setDraft({ ...draft, label: e.target.value })} className="mt-1 w-full" />
-            </label>
-            <label className="block">
-              <span className="text-[11px] text-zinc-400">Role</span>
-              <Select value={draft.role} onChange={(e) => setDraft({ ...draft, role: e.target.value })} className="mt-1 w-full">
-                <option value="primary">primary</option>
-                <option value="failover">failover</option>
-                <option value="snat-only">snat-only</option>
-              </Select>
-            </label>
-            <label className="block">
-              <span className="text-[11px] text-zinc-400">Priority (lower = higher)</span>
-              <Input mono type="number" value={String(draft.priority)} onChange={(e) => setDraft({ ...draft, priority: Number(e.target.value) || 200 })} className="mt-1 w-full" />
-            </label>
-            <label className="block col-span-2">
-              <span className="text-[11px] text-zinc-400">Health-check target</span>
-              <Input mono value={draft.healthTarget} onChange={(e) => setDraft({ ...draft, healthTarget: e.target.value })} className="mt-1 w-full" />
-            </label>
-          </div>
-          <div className="flex gap-2 justify-end pt-4">
-            <Button variant="ghost" onClick={() => setAdding(false)}>Cancel</Button>
-            <Button variant="primary" icon="Plus" onClick={submit}>Save</Button>
-          </div>
-        </Card>
-      )}
-
-      <Card title="LAN" subtitle="Private bridge (read-only — change at OS layer)">
-        <SettingRow label="IPv4 address"><Input mono className="max-w-sm" defaultValue="10.0.0.1/24" readOnly /></SettingRow>
-        <SettingRow label="Bridge"><Input mono className="max-w-sm" defaultValue="vmbr1" readOnly /></SettingRow>
-      </Card>
-    </>
   );
 }
 

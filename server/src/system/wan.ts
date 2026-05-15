@@ -15,7 +15,16 @@ export interface WanWithHealth {
   priority: number;
   healthTarget: string;
   enabled: boolean;
+  isp: string | null;
+  wanPort: number | null;
   health: { status: 'up' | 'degraded' | 'down'; rttMs: number | null; lossPct: number | null; ts: number | null };
+}
+
+export interface WanDetailed extends WanWithHealth {
+  ipv4: string | null;
+  ipv6: string | null;
+  uptimePct: number | null;   // % of health samples 'up' over the last 24h
+  uptimeSince: number | null; // epoch ms — start of the current 'up' streak
 }
 
 function lastHealth(iface: string): WanWithHealth['health'] {
@@ -37,11 +46,50 @@ export function listWans(): WanWithHealth[] {
     priority: w.priority,
     healthTarget: w.healthTarget,
     enabled: w.enabled,
+    isp: w.isp ?? null,
+    wanPort: w.wanPort ?? null,
     health: lastHealth(w.iface),
   }));
 }
 
-export function addWan(input: { iface: string; label: string; role?: string; priority?: number; healthTarget?: string }) {
+async function ifaceAddr(iface: string, family: '-4' | '-6'): Promise<string | null> {
+  if (!config.onLinux) return null;
+  try {
+    const r = await exec('ip', ['-o', family, 'addr', 'show', 'dev', iface], { allowFailure: true });
+    const re = family === '-4' ? /inet (\d{1,3}(?:\.\d{1,3}){3})/ : /inet6 ([0-9a-f:]+)/i;
+    const m = re.exec(r.stdout);
+    return m ? m[1]! : null;
+  } catch { return null; }
+}
+
+/** Uptime stats for a WAN, derived from the wan_health history table. */
+function uptimeStats(iface: string): { uptimePct: number | null; uptimeSince: number | null } {
+  const since = Date.now() - 86400_000;
+  const rows = db.select().from(wanHealth).where(eq(wanHealth.iface, iface)).all()
+    .filter(r => r.ts >= since)
+    .sort((a, b) => a.ts - b.ts);
+  if (rows.length === 0) return { uptimePct: null, uptimeSince: null };
+  const upCount = rows.filter(r => r.status === 'up').length;
+  const uptimePct = Math.round((upCount / rows.length) * 1000) / 10;
+  // Walk back from newest to find where the current 'up' streak began.
+  let uptimeSince: number | null = null;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i]!.status === 'up') uptimeSince = rows[i]!.ts;
+    else break;
+  }
+  return { uptimePct, uptimeSince };
+}
+
+/** WAN list enriched with live addresses + uptime — for the Internet UI. */
+export async function listWansDetailed(): Promise<WanDetailed[]> {
+  const base = listWans();
+  return Promise.all(base.map(async w => {
+    const [ipv4, ipv6] = await Promise.all([ifaceAddr(w.iface, '-4'), ifaceAddr(w.iface, '-6')]);
+    return { ...w, ipv4, ipv6, ...uptimeStats(w.iface) };
+  }));
+}
+
+export function addWan(input: { iface: string; label: string; role?: string; priority?: number; healthTarget?: string; isp?: string; wanPort?: number }) {
   const row = db.insert(wanInterfaces).values({
     iface: input.iface,
     label: input.label,
@@ -49,12 +97,14 @@ export function addWan(input: { iface: string; label: string; role?: string; pri
     priority: input.priority ?? 100,
     healthTarget: input.healthTarget ?? '1.1.1.1',
     enabled: true,
+    isp: input.isp ?? null,
+    wanPort: input.wanPort ?? null,
     createdAt: Date.now(),
   }).returning().get();
   return row;
 }
 
-export function patchWan(id: number, patch: { label?: string; role?: string; priority?: number; healthTarget?: string; enabled?: boolean }) {
+export function patchWan(id: number, patch: { label?: string; role?: string; priority?: number; healthTarget?: string; enabled?: boolean; isp?: string; wanPort?: number }) {
   db.update(wanInterfaces).set(patch).where(eq(wanInterfaces.id, id)).run();
 }
 

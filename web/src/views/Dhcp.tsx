@@ -2,11 +2,37 @@ import { useEffect, useState } from 'react';
 import { Card, Button, IconButton, Modal, Ring, Icon, KV, Field, Input, Badge } from '../components/primitives';
 import { api } from '../api/client';
 
-interface Lease { hostname: string; ip: string; mac: string; expiry: string; }
+interface Lease {
+  hostname: string; ip: string; mac: string; expiry: string; expiresAt: number;
+  networkId: number | null; networkName: string | null; vlanId: number | null;
+}
 interface Reservation { id: number; hostname: string; mac: string; ip: string; lease: string; }
 interface Scope { rangeStart: string; rangeEnd: string; leaseTime: string; gateway: string; dnsServers: string; domain: string; }
 interface DiscoveredHost { ip: string; mac: string | null; hostname: string | null; source: 'lease' | 'reservation' | 'static'; responded: boolean; }
 interface ScanResult { scanned: number; responded: number; hosts: DiscoveredHost[]; cidr: string; durationMs: number; }
+interface NetOption { id: number; name: string; vlanId: number | null }
+
+// Best-effort vendor hint from the MAC OUI (first 3 octets). Not exhaustive —
+// unmatched prefixes bucket as "Unknown".
+const OUI_VENDORS: Record<string, string> = {
+  'F0:9F:C2': 'Ubiquiti', '24:5A:4C': 'Ubiquiti', '78:8A:20': 'Ubiquiti', 'FC:EC:DA': 'Ubiquiti',
+  '3C:22:FB': 'Apple', 'A4:83:E7': 'Apple', 'F0:18:98': 'Apple', '14:7D:DA': 'Apple', 'BC:D0:74': 'Apple',
+  '44:00:10': 'Apple', 'D0:81:7A': 'Apple', '90:DD:5D': 'Apple',
+  '18:B4:30': 'Nest', '64:16:66': 'Nest', '38:8B:59': 'Google', '6C:AD:F8': 'Google',
+  'FC:A6:67': 'Amazon', '44:65:0D': 'Amazon', '68:54:FD': 'Amazon',
+  'B8:27:EB': 'Raspberry Pi', 'DC:A6:32': 'Raspberry Pi', 'E4:5F:01': 'Raspberry Pi',
+  '24:0A:C4': 'Espressif', '7C:9E:BD': 'Espressif', 'A0:20:A6': 'Espressif', 'C8:2B:96': 'Espressif',
+  '00:1A:11': 'Google', '54:60:09': 'Google',
+  '8C:85:90': 'Apple', 'AC:DE:48': 'Apple', 'F4:F5:D8': 'Google',
+  '50:C7:BF': 'TP-Link', '00:11:32': 'Synology', '00:1B:21': 'Intel', '00:50:56': 'VMware',
+  'BC:24:11': 'Proxmox', '00:15:5D': 'Microsoft',
+  '00:0C:29': 'VMware', '52:54:00': 'QEMU/KVM',
+};
+
+function vendorOf(mac: string): string {
+  const oui = mac.slice(0, 8).toUpperCase();
+  return OUI_VENDORS[oui] ?? 'Unknown';
+}
 
 export function Dhcp() {
   const [leases, setLeases] = useState<Lease[]>([]);
@@ -19,16 +45,37 @@ export function Dhcp() {
   const [reserveDraft, setReserveDraft] = useState<DiscoveredHost | null>(null);
   const [reserveHostname, setReserveHostname] = useState('');
   const [reserveMac, setReserveMac] = useState('');
+  const [nets, setNets] = useState<NetOption[]>([]);
+  const [netFilter, setNetFilter] = useState<Set<number>>(new Set());
+  const [vendorFilter, setVendorFilter] = useState<Set<string>>(new Set());
+  const [leaseState, setLeaseState] = useState<'all' | 'expiring'>('all');
+  const [tab, setTab] = useState<'main' | 'iptable'>('main');
 
   const reload = () => {
     api.get<{ leases: Lease[] }>('/api/dhcp/leases').then(r => setLeases(r.leases)).catch(() => {});
     api.get<{ reservations: Reservation[] }>('/api/dhcp/reservations').then(r => setReservations(r.reservations)).catch(() => {});
     api.get<{ scope: Scope }>('/api/dhcp/scope').then(r => setScope(r.scope)).catch(() => {});
+    api.get<{ networks: NetOption[] }>('/api/networks').then(r => setNets(r.networks)).catch(() => {});
   };
 
   useEffect(reload, []);
 
-  const filtered = leases.filter(l => !filter || l.hostname.toLowerCase().includes(filter.toLowerCase()) || l.ip.includes(filter));
+  const toggleSet = <T,>(set: Set<T>, v: T): Set<T> => {
+    const next = new Set(set);
+    next.has(v) ? next.delete(v) : next.add(v);
+    return next;
+  };
+
+  const filtered = leases.filter(l => {
+    if (filter && !l.hostname.toLowerCase().includes(filter.toLowerCase()) && !l.ip.includes(filter) && !l.mac.includes(filter.toLowerCase())) return false;
+    if (netFilter.size > 0 && (l.networkId == null || !netFilter.has(l.networkId))) return false;
+    if (vendorFilter.size > 0 && !vendorFilter.has(vendorOf(l.mac))) return false;
+    if (leaseState === 'expiring' && l.expiresAt - Date.now() > 3_600_000) return false;
+    return true;
+  });
+  const sortedFiltered = tab === 'iptable'
+    ? [...filtered].sort((a, b) => ipNum(a.ip) - ipNum(b.ip))
+    : filtered;
   const poolCount = scope ? ipsBetween(scope.rangeStart, scope.rangeEnd) : 151;
 
   const runScan = async () => {
@@ -198,59 +245,90 @@ export function Dhcp() {
         )}
       </Card>
 
-      <Card title="Active DHCP Leases" subtitle={`${leases.length} clients connected to 10.0.0.0/24`}
+      <div className="grid grid-cols-12 gap-4">
+        <aside className="col-span-12 lg:col-span-3">
+          <LeaseFilters
+            leases={leases} nets={nets}
+            filter={filter} setFilter={setFilter}
+            netFilter={netFilter} setNetFilter={setNetFilter}
+            vendorFilter={vendorFilter} setVendorFilter={setVendorFilter}
+            leaseState={leaseState} setLeaseState={setLeaseState}
+            toggleSet={toggleSet}
+          />
+        </aside>
+
+        <div className="col-span-12 lg:col-span-9">
+          <Card
+            title="Client Leases"
+            subtitle={`${filtered.length} of ${leases.length} leases${netFilter.size || vendorFilter.size || filter || leaseState !== 'all' ? ' (filtered)' : ''}`}
             action={
               <div className="flex items-center gap-2">
-                <div className="relative">
-                  <Icon name="Search" size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500" />
-                  <input
-                    value={filter}
-                    onChange={(e) => setFilter(e.target.value)}
-                    className="h-8 pl-7 pr-3 rounded-md bg-zinc-900/60 border border-zinc-800/70 text-[12px] placeholder:text-zinc-600 w-48"
-                    placeholder="Filter hostname…"
-                  />
+                <div className="flex items-center gap-1 p-0.5 rounded-md bg-zinc-900/60 border border-zinc-800/70">
+                  {(['main', 'iptable'] as const).map(t => (
+                    <button key={t} onClick={() => setTab(t)}
+                            className={`h-7 px-2.5 rounded text-[11.5px] font-medium transition-colors ${tab === t ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-400 hover:text-zinc-200'}`}>
+                      {t === 'main' ? 'Main' : 'IP Table'}
+                    </button>
+                  ))}
                 </div>
                 <Button variant="secondary" size="sm" icon="FileDown">Export CSV</Button>
               </div>
             }>
-        <div className="overflow-x-auto -mx-5">
-          <table className="w-full text-[12.5px]">
-            <thead>
-              <tr className="text-left text-[10.5px] uppercase tracking-[0.08em] text-zinc-500 border-b border-zinc-800/70">
-                <th className="font-medium py-2.5 px-5">Hostname</th>
-                <th className="font-medium py-2.5 px-3">IP Address</th>
-                <th className="font-medium py-2.5 px-3">MAC Address</th>
-                <th className="font-medium py-2.5 px-3">Expires</th>
-                <th className="font-medium py-2.5 px-5 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-800/60">
-              {filtered.map((l) => (
-                <tr key={l.mac} className="hover:bg-zinc-900/30 transition-colors group">
-                  <td className="py-3 px-5">
-                    <div className="flex items-center gap-2">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
-                      <span className="text-zinc-100">{l.hostname}</span>
-                    </div>
-                  </td>
-                  <td className="py-3 px-3 font-mono text-cyan-300">{l.ip}</td>
-                  <td className="py-3 px-3 font-mono text-zinc-400">{l.mac}</td>
-                  <td className="py-3 px-3 font-mono text-zinc-400">{l.expiry}</td>
-                  <td className="py-3 px-5 text-right">
-                    <div className="inline-flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <Button variant="ghost" size="sm" icon="Pin" onClick={() => setConverting(l)}>Convert to Static</Button>
-                      <IconButton name="MoreHorizontal" label="More" size="sm" />
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {filtered.length === 0 && (
-                <tr><td colSpan={5} className="py-8 text-center text-[12px] text-zinc-600">No leases match.</td></tr>
-              )}
-            </tbody>
-          </table>
+            <div className="overflow-x-auto -mx-5">
+              <table className="w-full text-[12.5px]">
+                <thead>
+                  <tr className="text-left text-[10.5px] uppercase tracking-[0.08em] text-zinc-500 border-b border-zinc-800/70">
+                    <th className="font-medium py-2.5 px-5">Hostname</th>
+                    <th className="font-medium py-2.5 px-3">IP Address</th>
+                    <th className="font-medium py-2.5 px-3">MAC Address</th>
+                    <th className="font-medium py-2.5 px-3">Network</th>
+                    <th className="font-medium py-2.5 px-3">Vendor</th>
+                    <th className="font-medium py-2.5 px-3">Expires</th>
+                    {tab === 'main' && <th className="font-medium py-2.5 px-5 text-right">Actions</th>}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-800/60">
+                  {sortedFiltered.map((l) => {
+                    const expiringSoon = l.expiresAt - Date.now() < 3_600_000;
+                    return (
+                      <tr key={l.mac} className="hover:bg-zinc-900/30 transition-colors group">
+                        <td className="py-3 px-5">
+                          <div className="flex items-center gap-2">
+                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${expiringSoon ? 'bg-amber-400' : 'bg-emerald-400'}`} />
+                            <span className="text-zinc-100">{l.hostname}</span>
+                          </div>
+                        </td>
+                        <td className="py-3 px-3 font-mono text-cyan-300">{l.ip}</td>
+                        <td className="py-3 px-3 font-mono text-zinc-400">{l.mac}</td>
+                        <td className="py-3 px-3">
+                          {l.networkName
+                            ? <span className="text-zinc-300">{l.networkName}{l.vlanId ? <span className="text-zinc-500 font-mono"> · VLAN {l.vlanId}</span> : null}</span>
+                            : <span className="text-zinc-600">—</span>}
+                        </td>
+                        <td className="py-3 px-3 text-zinc-400">{vendorOf(l.mac)}</td>
+                        <td className="py-3 px-3 font-mono text-zinc-400">{l.expiry}</td>
+                        {tab === 'main' && (
+                          <td className="py-3 px-5 text-right">
+                            <div className="inline-flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <Button variant="ghost" size="sm" icon="Pin" onClick={() => setConverting(l)}>Convert to Static</Button>
+                              <IconButton name="MoreHorizontal" label="More" size="sm" />
+                            </div>
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
+                  {sortedFiltered.length === 0 && (
+                    <tr><td colSpan={tab === 'main' ? 7 : 6} className="py-8 text-center text-[12px] text-zinc-600">
+                      {leases.length === 0 ? 'No active leases.' : 'No leases match the current filters.'}
+                    </td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Card>
         </div>
-      </Card>
+      </div>
 
       <Modal
         open={!!reserveDraft}
@@ -314,6 +392,97 @@ export function Dhcp() {
 }
 
 function ipsBetween(a: string, b: string): number {
-  const toN = (s: string) => s.split('.').reduce((acc, oct) => (acc << 8) + Number(oct), 0) >>> 0;
-  return Math.max(0, toN(b) - toN(a) + 1);
+  return Math.max(0, ipNum(b) - ipNum(a) + 1);
+}
+
+function ipNum(s: string): number {
+  return s.split('.').reduce((acc, oct) => (acc << 8) + Number(oct), 0) >>> 0;
+}
+
+interface LeaseFiltersProps {
+  leases: Lease[];
+  nets: NetOption[];
+  filter: string; setFilter: (v: string) => void;
+  netFilter: Set<number>; setNetFilter: (s: Set<number>) => void;
+  vendorFilter: Set<string>; setVendorFilter: (s: Set<string>) => void;
+  leaseState: 'all' | 'expiring'; setLeaseState: (v: 'all' | 'expiring') => void;
+  toggleSet: <T>(set: Set<T>, v: T) => Set<T>;
+}
+
+function LeaseFilters({
+  leases, nets, filter, setFilter, netFilter, setNetFilter,
+  vendorFilter, setVendorFilter, leaseState, setLeaseState, toggleSet,
+}: LeaseFiltersProps) {
+  const netCount = (id: number) => leases.filter(l => l.networkId === id).length;
+  const vendorCounts = leases.reduce<Record<string, number>>((acc, l) => {
+    const v = vendorOf(l.mac);
+    acc[v] = (acc[v] ?? 0) + 1;
+    return acc;
+  }, {});
+  const vendors = Object.entries(vendorCounts).sort((a, b) => b[1] - a[1]);
+  const expiringCount = leases.filter(l => l.expiresAt - Date.now() < 3_600_000).length;
+  const anyActive = filter || netFilter.size > 0 || vendorFilter.size > 0 || leaseState !== 'all';
+
+  const Check = ({ on, label, count, onClick }: { on: boolean; label: string; count: number; onClick: () => void }) => (
+    <button onClick={onClick} className="w-full flex items-center gap-2 py-1 text-[12px] hover:text-zinc-100 transition-colors">
+      <span className={`w-3.5 h-3.5 rounded-[3px] border flex items-center justify-center shrink-0 ${on ? 'bg-cyan-400 border-cyan-400' : 'border-zinc-600'}`}>
+        {on && <Icon name="Check" size={10} className="text-zinc-950" />}
+      </span>
+      <span className={`flex-1 text-left ${on ? 'text-zinc-100' : 'text-zinc-400'}`}>{label}</span>
+      <span className="font-mono text-[10.5px] text-zinc-500">{count}</span>
+    </button>
+  );
+
+  return (
+    <div className="glass rounded-xl p-4 sticky top-4 space-y-4">
+      <div className="relative">
+        <Icon name="Search" size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500" />
+        <input value={filter} onChange={(e) => setFilter(e.target.value)}
+               placeholder="Search host / IP / MAC"
+               className="w-full h-8 pl-7 pr-3 rounded-md bg-zinc-900/60 border border-zinc-800/70 text-[12px] placeholder:text-zinc-600 focus:border-cyan-400/50 transition-colors" />
+      </div>
+
+      <div>
+        <div className="text-[10px] uppercase tracking-[0.1em] text-zinc-500 font-medium mb-1.5">Lease state</div>
+        {(['all', 'expiring'] as const).map(s => (
+          <button key={s} onClick={() => setLeaseState(s)}
+                  className="w-full flex items-center gap-2 py-1 text-[12px] transition-colors">
+            <span className={`w-3 h-3 rounded-full border flex items-center justify-center shrink-0 ${leaseState === s ? 'border-cyan-400' : 'border-zinc-600'}`}>
+              {leaseState === s && <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />}
+            </span>
+            <span className={`flex-1 text-left ${leaseState === s ? 'text-zinc-100' : 'text-zinc-400'}`}>
+              {s === 'all' ? 'All leases' : 'Expiring < 1h'}
+            </span>
+            {s === 'expiring' && <span className="font-mono text-[10.5px] text-zinc-500">{expiringCount}</span>}
+          </button>
+        ))}
+      </div>
+
+      <div>
+        <div className="text-[10px] uppercase tracking-[0.1em] text-zinc-500 font-medium mb-1.5">Network / VLAN</div>
+        {nets.length === 0 && <div className="text-[11px] text-zinc-600 py-1">no networks</div>}
+        {nets.map(n => (
+          <Check key={n.id} on={netFilter.has(n.id)} count={netCount(n.id)}
+                 label={n.vlanId ? `${n.name} (${n.vlanId})` : n.name}
+                 onClick={() => setNetFilter(toggleSet(netFilter, n.id))} />
+        ))}
+      </div>
+
+      <div>
+        <div className="text-[10px] uppercase tracking-[0.1em] text-zinc-500 font-medium mb-1.5">Vendor</div>
+        {vendors.length === 0 && <div className="text-[11px] text-zinc-600 py-1">no leases</div>}
+        {vendors.map(([v, c]) => (
+          <Check key={v} on={vendorFilter.has(v)} count={c} label={v}
+                 onClick={() => setVendorFilter(toggleSet(vendorFilter, v))} />
+        ))}
+      </div>
+
+      {anyActive && (
+        <button onClick={() => { setFilter(''); setNetFilter(new Set()); setVendorFilter(new Set()); setLeaseState('all'); }}
+                className="text-[11.5px] text-cyan-300 hover:text-cyan-200 transition-colors">
+          Clear all filters
+        </button>
+      )}
+    </div>
+  );
 }

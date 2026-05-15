@@ -29,7 +29,28 @@ export const dhcpReservations = sqliteTable('dhcp_reservations', {
   ip: text('ip').notNull(),
   lease: text('lease').notNull().default('24h'),
   comment: text('comment'),
+  networkId: integer('network_id'),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+// ─── VLAN-aware networks ("vnets") ──────────────────────────────────
+export const networks = sqliteTable('networks', {
+  id:          integer('id').primaryKey({ autoIncrement: true }),
+  name:        text('name').notNull(),
+  vlanId:      integer('vlan_id'),                       // NULL = native/untagged
+  iface:       text('iface').notNull().default('eth1'),  // base interface
+  subnet:      text('subnet').notNull(),                 // CIDR e.g. 10.10.114.0/24
+  gateway:     text('gateway').notNull(),                // appliance IP on this net
+  dhcpEnabled: integer('dhcp_enabled', { mode: 'boolean' }).notNull().default(true),
+  dhcpStart:   text('dhcp_start').notNull(),
+  dhcpEnd:     text('dhcp_end').notNull(),
+  leaseTime:   text('lease_time').notNull().default('24h'),
+  dnsServers:  text('dns_servers').notNull().default('1.1.1.1'),
+  domain:      text('domain').notNull().default('varrok.local'),
+  purpose:     text('purpose').notNull().default('corporate'), // corporate|guest|iot|management
+  enabled:     integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  isDefault:   integer('is_default', { mode: 'boolean' }).notNull().default(false),
+  createdAt:   integer('created_at').notNull(),
 });
 
 export const dhcpScope = sqliteTable('dhcp_scope', {
@@ -167,6 +188,7 @@ export type FwRule = typeof fwRules.$inferSelect;
 export type DetectionRule = typeof detectionRules.$inferSelect;
 export type Threat = typeof threats.$inferSelect;
 export type EventBucket = typeof eventBuckets.$inferSelect;
+export type Network = typeof networks.$inferSelect;
 
 // ─── Per-flow telemetry (sampled from conntrack) ────────────────
 export const flowTopClients = sqliteTable('flow_top_clients', {
@@ -224,6 +246,8 @@ export const wanInterfaces = sqliteTable('wan_interfaces', {
   priority:     integer('priority').notNull().default(100),
   healthTarget: text('health_target').notNull().default('1.1.1.1'),
   enabled:      integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  isp:          text('isp'),
+  wanPort:      integer('wan_port'),
   createdAt:    integer('created_at').notNull(),
 });
 
