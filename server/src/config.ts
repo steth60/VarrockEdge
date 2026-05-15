@@ -33,12 +33,20 @@ export const config = {
   configDir: envOr('VE_CONFIG_DIR', defaultConfigDir),
   wanIface: envOr('VE_WAN_IFACE', 'eth0'),
   lanIface: envOr('VE_LAN_IFACE', 'eth1'),
-  sessionSecret: envOr('VE_SESSION_SECRET', 'dev-only-insecure-secret-change-me'),
+  // On a real appliance the session secret is mandatory — no insecure shared
+  // fallback. install.sh generates one; the dev fallback applies off-Linux only.
+  sessionSecret: onLinux ? env('VE_SESSION_SECRET') : envOr('VE_SESSION_SECRET', 'dev-only-insecure-secret-change-me'),
   adminPassword: envOr('VE_ADMIN_PASSWORD', 'admin'),
   logLevel: envOr('VE_LOG_LEVEL', 'info'),
   onLinux,
   publicDir: path.resolve(__dirname, '../public'),
   hostname: os.hostname(),
 };
+
+// Fail fast on a too-short session secret rather than running with weak
+// session signing.
+if (onLinux && config.sessionSecret.length < 32) {
+  throw new Error('VE_SESSION_SECRET must be at least 32 characters');
+}
 
 export type AppConfig = typeof config;
