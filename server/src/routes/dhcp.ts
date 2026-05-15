@@ -6,7 +6,7 @@ import { eq } from 'drizzle-orm';
 import { parseLeases, reload } from '../system/dnsmasq';
 import { scanLan, reachableIps } from '../system/scan';
 import { getDefaultNetwork, ipInSubnet, applyNetworks } from '../system/network';
-import { zIp, zMac, zLease, zComment, zIpList, zHostname, HOSTNAME } from '../validators';
+import { zIp, zMac, zLease, zComment, zIpList, zHostname, HOSTNAME, CIDR } from '../validators';
 
 const router = Router();
 
@@ -173,10 +173,19 @@ router.patch('/scope', async (req, res) => {
   res.json({ scope: scopeView() });
 });
 
+// A LAN scan is a ping sweep — bound the CIDR so it cannot be turned into an
+// internal mass-scan / DoS of millions of addresses.
+const scanSchema = z.object({
+  cidr: z.string().regex(CIDR)
+    .refine(c => Number(c.split('/')[1]) >= 20, 'scan range too large — use /20 or smaller')
+    .optional(),
+});
+
 router.post('/scan', async (req, res) => {
-  const cidr = typeof req.body?.cidr === 'string' ? req.body.cidr : undefined;
+  const parse = scanSchema.safeParse(req.body ?? {});
+  if (!parse.success) return res.status(400).json({ error: 'invalid input', issues: parse.error.issues });
   try {
-    const r = await scanLan({ cidr });
+    const r = await scanLan({ cidr: parse.data.cidr });
     res.json(r);
   } catch (err: any) {
     res.status(400).json({ error: err?.message ?? 'scan failed' });

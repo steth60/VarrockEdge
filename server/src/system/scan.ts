@@ -118,6 +118,8 @@ export async function scanLan(opts?: { cidr?: string; concurrency?: number }): P
   const range = cidrRange(cidr);
   if (!range) throw new Error(`bad cidr: ${cidr}`);
   const [start, end] = range;
+  // Hard backstop against a mass-scan / memory blow-up regardless of caller.
+  if (end - start > 65536) throw new Error('scan range too large');
 
   const leases = parseLeases();
   const leaseByIp = new Map(leases.map(l => [l.ip, l]));
