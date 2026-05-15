@@ -23,12 +23,15 @@ export function destroySession(id: string) {
 }
 
 export interface AuthedRequest extends Request {
-  user?: { id: number; email: string; name: string; role: string };
+  user?: { id: number; email: string; name: string; role: string; mustChangePassword: boolean };
   sessionId?: string;
 }
 
 export function loadUser(req: AuthedRequest, _res: Response, next: NextFunction) {
-  const sid = req.cookies?.[SESSION_COOKIE] as string | undefined;
+  // The session cookie is signed (cookieParser is given a secret), so the
+  // value arrives via signedCookies; fall back to the unsigned jar so a stale
+  // pre-upgrade cookie is simply ignored rather than throwing.
+  const sid = (req.signedCookies?.[SESSION_COOKIE] ?? req.cookies?.[SESSION_COOKIE]) as string | undefined;
   if (!sid) return next();
   const row = db
     .select({
@@ -39,6 +42,7 @@ export function loadUser(req: AuthedRequest, _res: Response, next: NextFunction)
       name: users.name,
       role: users.role,
       status: users.status,
+      mustChangePassword: users.mustChangePassword,
     })
     .from(sessions)
     .innerJoin(users, eq(users.id, sessions.userId))
@@ -50,7 +54,10 @@ export function loadUser(req: AuthedRequest, _res: Response, next: NextFunction)
     return next();
   }
   if (row.status !== 'active') return next();
-  req.user = { id: row.uid, email: row.email, name: row.name, role: row.role };
+  req.user = {
+    id: row.uid, email: row.email, name: row.name, role: row.role,
+    mustChangePassword: Boolean(row.mustChangePassword),
+  };
   req.sessionId = row.sid;
   next();
 }
