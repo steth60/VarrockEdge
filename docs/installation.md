@@ -1,31 +1,49 @@
 # Installation
 
-VarrokEdge targets a privileged Debian 12 / Ubuntu 24.04 LXC container with
-two interfaces:
+VarrokEdge runs on Debian 12 / Ubuntu 24.04 — a privileged LXC, a VM, or bare
+metal — as a router with two network interfaces: one **WAN** (internet-facing)
+and one **LAN** (private / clients). The interface names don't matter; you pick
+them during install.
 
-- `eth0` — public WAN
-- `eth1` — private LAN, statically assigned `10.0.0.2/24`
+> The installer does **not** assign IP addresses to your interfaces. Configure
+> the LAN interface's static IP — the gateway address clients use — at the OS
+> level (netplan on Ubuntu, `/etc/network/interfaces` on Debian) before or
+> after running the installer.
 
-## One-shot install
+## Install
 
 ```bash
 sudo bash install.sh
 ```
 
-This:
+Run from a terminal this opens an interactive **setup wizard** (a whiptail TUI):
+it detects the machine's network interfaces and walks you through choosing the
+WAN and LAN interface, the web-UI bind address and port, and the admin
+password — then writes `/etc/varrok-edge/env` and installs.
 
-1. `apt-get install`s the required system packages.
-2. Installs Node.js 20 via the NodeSource repo.
-3. Disables `systemd-resolved` to free port 53 for `dnsmasq`.
-4. Copies the app to `/opt/varrok-edge`, runs `npm ci` and `npm run build`.
-5. Generates a random admin password and a session secret into
-   `/etc/varrok-edge/env`.
-6. Runs DB migrations and seeds the admin user, default DHCP scope,
-   default detection rules, and the core MASQUERADE row.
-7. Writes a systemd unit, enables and starts it.
-8. Bootstraps `iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE`
-   and persists it.
-9. Prints the URL, username, and password.
+For automation / scripted deploys, run it non-interactively:
+
+```bash
+sudo WAN_IFACE=eth0 LAN_IFACE=eth1 BIND_HOST=10.0.0.1 bash install.sh --non-interactive
+```
+
+(A piped `curl … | bash` has no terminal, so it also runs non-interactively.)
+
+Either way the installer:
+
+1. `apt-get install`s the required system packages + Node.js 20.
+2. Disables `systemd-resolved` to free port 53 for `dnsmasq`.
+3. Copies the app to `/opt/varrok-edge`, runs `npm ci` + `npm run build`.
+4. Writes `/etc/varrok-edge/env` — generating a session secret and an
+   initial admin password on a fresh install.
+5. Runs DB migrations and seeds the admin user + defaults.
+6. Installs, enables and starts the systemd unit.
+7. Bootstraps the firewall — LAN NAT plus a WAN lockdown (every inbound
+   connection on the WAN interface is dropped except the WireGuard listener).
+
+Re-running `install.sh` on a machine that already has it offers **Upgrade in
+place** (keep all settings, just rebuild) or **Reconfigure** (change the
+WAN / LAN / bind settings).
 
 ## Required packages
 
@@ -73,6 +91,16 @@ The default `Set-Cookie` is `SameSite=Lax` (HttpOnly always); the `Secure`
 flag is set automatically when the request arrives over HTTPS.
 
 ## Upgrades
+
+Re-run the installer from an updated source checkout — it detects the existing
+install and offers **Upgrade in place**:
+
+```bash
+sudo bash install.sh
+```
+
+It preserves `/etc/varrok-edge/env` (including the session secret) and the
+database, then rebuilds and restarts. Or do it by hand:
 
 ```bash
 cd /opt/varrok-edge

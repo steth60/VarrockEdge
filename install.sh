@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# VarrokEdge installer — Debian 12 / Ubuntu 24.04 LXC container
+# VarrokEdge installer — Debian / Ubuntu router appliance.
+# Run with a terminal for the interactive setup wizard, or pass
+# --non-interactive (env-var / default driven) for scripted installs.
 set -euo pipefail
 # Files created by this installer (notably the env file with the session
 # secret and admin password) must never be world-readable.
@@ -11,33 +13,202 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 if ! command -v apt-get >/dev/null 2>&1; then
-  echo "✗ apt-get not found. This installer targets Debian/Ubuntu LXC containers." >&2
+  echo "✗ apt-get not found. This installer targets Debian / Ubuntu." >&2
   exit 1
 fi
+export DEBIAN_FRONTEND=noninteractive
 
-# ─── Config ──────────────────────────────────────────────────────
+# ─── Arguments ───────────────────────────────────────────────────
+NONINTERACTIVE=0
+for arg in "$@"; do
+  case "$arg" in
+    -y|--yes|--non-interactive) NONINTERACTIVE=1 ;;
+    -h|--help)
+      cat <<'USAGE'
+VarrokEdge installer
+
+  bash install.sh                    interactive TUI setup wizard
+  bash install.sh --non-interactive  scripted install (env vars / defaults)
+
+Non-interactive config (env vars, all optional):
+  WAN_IFACE LAN_IFACE BIND_HOST PORT APP_DIR CONFIG_DIR DATA_DIR APP_USER
+
+The TUI needs a real terminal — a piped `curl … | bash` runs non-interactively.
+USAGE
+      exit 0 ;;
+  esac
+done
+
+# ─── Paths + defaults ────────────────────────────────────────────
 APP_USER="${APP_USER:-root}"
 APP_DIR="${APP_DIR:-/opt/varrok-edge}"
 CONFIG_DIR="${CONFIG_DIR:-/etc/varrok-edge}"
 DATA_DIR="${DATA_DIR:-/var/lib/varrok-edge}"
+SRC_DIR="${SRC_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+ENV_FILE="$CONFIG_DIR/env"
 WAN_IFACE="${WAN_IFACE:-eth0}"
 LAN_IFACE="${LAN_IFACE:-eth1}"
 BIND_HOST="${BIND_HOST:-10.0.0.2}"
 PORT="${PORT:-8080}"
-SRC_DIR="${SRC_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 
-echo "▸ VarrokEdge installer"
-echo "  source        : $SRC_DIR"
-echo "  app dir       : $APP_DIR"
-echo "  config dir    : $CONFIG_DIR"
-echo "  data dir      : $DATA_DIR"
-echo "  WAN / LAN     : $WAN_IFACE / $LAN_IFACE"
-echo "  bind          : http://$BIND_HOST:$PORT"
-echo ""
+# ─── Decide interactive vs scripted ──────────────────────────────
+INTERACTIVE=0
+if [[ $NONINTERACTIVE -eq 0 && -t 0 && -t 1 ]]; then
+  if ! command -v whiptail >/dev/null 2>&1; then
+    echo "▸ Installing whiptail (setup wizard)…"
+    apt-get update -qq && apt-get install -y --no-install-recommends whiptail >/dev/null 2>&1 || true
+  fi
+  command -v whiptail >/dev/null 2>&1 && INTERACTIVE=1
+fi
+
+# ─── whiptail helpers ────────────────────────────────────────────
+tui_msg()   { whiptail --title "VarrokEdge" --msgbox "$1" 16 76; }
+tui_yesno() { whiptail --title "VarrokEdge" --yesno "$1" 14 76; }
+tui_input() { whiptail --title "VarrokEdge" --inputbox "$1" 11 76 "${2:-}" 3>&1 1>&2 2>&3; }
+tui_pass()  { whiptail --title "VarrokEdge" --passwordbox "$1" 11 76 3>&1 1>&2 2>&3; }
+tui_menu()  { local p="$1"; shift; whiptail --title "VarrokEdge" --menu "$p" 20 76 9 "$@" 3>&1 1>&2 2>&3; }
+cancelled() { echo "✗ Setup cancelled." >&2; exit 1; }
+
+is_ip()       { [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; }
+iface_ip()    { ip -4 -o addr show "$1" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1; }
+rand_pw()     { head -c 18 /dev/urandom | base64 | tr -d '\n=' | tr '/+' 'AB'; }
+rand_secret() { head -c 32 /dev/urandom | base64 | tr -d '\n'; }
+old_env() {
+  [[ -f "$ENV_FILE" ]] || return 0
+  { grep -E "^$1=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-; } || true
+}
+
+# Emit whiptail --menu tag/item pairs (one per line) for every usable NIC.
+iface_menu_args() {
+  local exclude="${1:-}" n state ip4
+  for n in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | cut -d@ -f1); do
+    case "$n" in lo|wg*|veth*|fw*|tap*) continue ;; esac
+    [[ -n "$exclude" && "$n" == "$exclude" ]] && continue
+    state=$(ip -o link show "$n" 2>/dev/null | grep -oE 'state [A-Z]+' | awk '{print $2}' || true)
+    ip4=$(iface_ip "$n")
+    printf '%s\n%s\n' "$n" "${ip4:-no IPv4} · ${state:-?}"
+  done
+}
+
+# ─── Install mode ────────────────────────────────────────────────
+MODE="fresh"
+if [[ -f "$ENV_FILE" ]]; then
+  if [[ $INTERACTIVE -eq 1 ]]; then
+    sel=$(tui_menu "An existing VarrokEdge install was found. What next?" \
+      "upgrade"     "Upgrade in place — keep all current settings" \
+      "reconfigure" "Reconfigure — change WAN / LAN / bind settings" \
+      "cancel"      "Cancel the installer") || cancelled
+    case "$sel" in
+      upgrade)     MODE="upgrade" ;;
+      reconfigure) MODE="reconfigure" ;;
+      *)           cancelled ;;
+    esac
+  else
+    MODE="upgrade"   # scripted re-run = upgrade in place
+  fi
+fi
+
+# ─── Setup wizard (interactive fresh / reconfigure) ──────────────
+if [[ "$MODE" == "reconfigure" ]]; then
+  WAN_IFACE="$(old_env VE_WAN_IFACE)"; LAN_IFACE="$(old_env VE_LAN_IFACE)"
+  BIND_HOST="$(old_env VE_BIND_HOST)"; PORT="$(old_env VE_PORT)"
+fi
+
+ADMIN_PW=""
+if [[ "$MODE" != "upgrade" && $INTERACTIVE -eq 1 ]]; then
+  tui_msg "Welcome to the VarrokEdge setup wizard.
+
+This configures VarrokEdge as a network router / controller — you'll pick the
+WAN and LAN interfaces and where the web UI listens.
+
+Note: this installer does NOT assign IP addresses to your interfaces. Configure
+the LAN interface's static IP at the OS level (netplan / ifupdown) yourself."
+
+  mapfile -t WANARGS < <(iface_menu_args "")
+  [[ ${#WANARGS[@]} -ge 2 ]] || { echo "✗ no usable network interfaces detected" >&2; exit 1; }
+  WAN_IFACE=$(tui_menu "Select the WAN (internet-facing) interface:" "${WANARGS[@]}") || cancelled
+
+  mapfile -t LANARGS < <(iface_menu_args "$WAN_IFACE")
+  [[ ${#LANARGS[@]} -ge 2 ]] || { echo "✗ a second interface is required for the LAN side" >&2; exit 1; }
+  LAN_IFACE=$(tui_menu "Select the LAN (private / clients) interface:" "${LANARGS[@]}") || cancelled
+
+  defbind=$(iface_ip "$LAN_IFACE"); defbind="${defbind:-${BIND_HOST:-10.0.0.1}}"
+  while :; do
+    BIND_HOST=$(tui_input "Web UI bind address — the LAN IP of this machine, the address you browse to. It must be an IP this host actually holds." "$defbind") || cancelled
+    is_ip "$BIND_HOST" && break
+    tui_msg "'$BIND_HOST' is not a valid IPv4 address — try again."
+  done
+  if ! ip -4 -o addr show 2>/dev/null | grep -qw "$BIND_HOST"; then
+    tui_yesno "Warning: $BIND_HOST is not currently assigned to any interface on this host. VarrokEdge will fail to start until it is.
+
+Continue anyway?" || cancelled
+  fi
+
+  PORT=$(tui_input "Web UI port:" "${PORT:-8080}") || cancelled
+  [[ "$PORT" =~ ^[0-9]+$ ]] || PORT=8080
+
+  if [[ "$MODE" == "fresh" ]]; then
+    if tui_yesno "Auto-generate a strong admin password?
+
+Recommended — VarrokEdge forces you to set your own on first sign-in regardless." ; then
+      ADMIN_PW="$(rand_pw)"
+    else
+      ADMIN_PW=$(tui_pass "Enter an initial admin password:") || cancelled
+      [[ -n "$ADMIN_PW" ]] || ADMIN_PW="$(rand_pw)"
+    fi
+  fi
+
+  tui_yesno "Review — proceed with the install?
+
+  WAN interface : $WAN_IFACE
+  LAN interface : $LAN_IFACE
+  Web UI        : http://$BIND_HOST:$PORT
+  App dir       : $APP_DIR
+  Config dir    : $CONFIG_DIR
+  Data dir      : $DATA_DIR" || cancelled
+elif [[ "$MODE" == "fresh" ]]; then
+  # Non-interactive fresh install — values come from env vars / defaults.
+  ADMIN_PW="${VE_ADMIN_PASSWORD:-$(rand_pw)}"
+fi
+
+# ─── Write the env file ──────────────────────────────────────────
+mkdir -p "$APP_DIR" "$CONFIG_DIR" "$DATA_DIR"
+chmod 700 "$CONFIG_DIR"   # holds the secrets — root-only
+
+FRESH_INSTALL=0
+if [[ "$MODE" != "upgrade" ]]; then
+  SESSION_SECRET="$(old_env VE_SESSION_SECRET)"
+  [[ -n "$SESSION_SECRET" ]] || SESSION_SECRET="$(rand_secret)"
+  if [[ "$MODE" == "reconfigure" ]]; then
+    ADMIN_PW="$(old_env VE_ADMIN_PASSWORD)"   # password is unchanged on reconfigure
+  else
+    FRESH_INSTALL=1
+  fi
+  cat > "$ENV_FILE" <<EOF
+VE_BIND_HOST=$BIND_HOST
+VE_PORT=$PORT
+VE_DB_PATH=$DATA_DIR/varrok-edge.db
+VE_CONFIG_DIR=$CONFIG_DIR
+VE_WAN_IFACE=$WAN_IFACE
+VE_LAN_IFACE=$LAN_IFACE
+VE_ADMIN_PASSWORD=$ADMIN_PW
+VE_SESSION_SECRET=$SESSION_SECRET
+VE_LOG_LEVEL=info
+EOF
+  chmod 600 "$ENV_FILE"
+fi
+
+# The env file is now authoritative for every value the rest of the script uses.
+set -a; source "$ENV_FILE"; set +a
+WAN_IFACE="${VE_WAN_IFACE:-$WAN_IFACE}"; LAN_IFACE="${VE_LAN_IFACE:-$LAN_IFACE}"
+BIND_HOST="${VE_BIND_HOST:-$BIND_HOST}"; PORT="${VE_PORT:-$PORT}"
+
+echo "▸ VarrokEdge installer ($MODE)"
+echo "  WAN / LAN : $WAN_IFACE / $LAN_IFACE"
+echo "  bind      : http://$BIND_HOST:$PORT"
 
 # ─── apt packages ────────────────────────────────────────────────
 echo "▸ Installing system packages"
-export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y --no-install-recommends \
   curl ca-certificates gnupg openssl git \
@@ -102,10 +273,6 @@ fi
 
 # ─── Copy app source ─────────────────────────────────────────────
 echo "▸ Installing application to $APP_DIR"
-mkdir -p "$APP_DIR" "$CONFIG_DIR" "$DATA_DIR"
-# $CONFIG_DIR holds the env file (secrets) — keep it root-only.
-chmod 700 "$CONFIG_DIR"
-# Use rsync if available, else cp -r
 if command -v rsync >/dev/null 2>&1; then
   rsync -a --delete \
     --exclude node_modules --exclude .git --exclude dist --exclude var --exclude '*.db' --exclude '*.tsbuildinfo' \
@@ -122,33 +289,14 @@ echo "▸ Installing npm dependencies (this can take a few minutes)"
 npm ci --no-fund >/dev/null
 
 echo "▸ Building server + web bundle"
-npm run build >/dev/null
-
-# ─── Generate secrets if missing ─────────────────────────────────
-ENV_FILE="$CONFIG_DIR/env"
-if [[ ! -f "$ENV_FILE" ]]; then
-  ADMIN_PW="$(openssl rand -base64 18 | tr -d '\n' | tr '/+' 'AB')"
-  SESSION_SECRET="$(openssl rand -base64 32)"
-  cat > "$ENV_FILE" <<EOF
-VE_BIND_HOST=$BIND_HOST
-VE_PORT=$PORT
-VE_DB_PATH=$DATA_DIR/varrok-edge.db
-VE_CONFIG_DIR=$CONFIG_DIR
-VE_WAN_IFACE=$WAN_IFACE
-VE_LAN_IFACE=$LAN_IFACE
-VE_ADMIN_PASSWORD=$ADMIN_PW
-VE_SESSION_SECRET=$SESSION_SECRET
-VE_LOG_LEVEL=info
-EOF
-  chmod 600 "$ENV_FILE"
-  FRESH_INSTALL=1
-else
-  FRESH_INSTALL=0
-fi
+npm run build >/dev/null || {
+  echo "  ✗ build failed — if this is a JavaScript heap OOM, give this machine" >&2
+  echo "    at least 2 GB of RAM and re-run." >&2
+  exit 1
+}
 
 # ─── DB migrate + seed ───────────────────────────────────────────
 echo "▸ Running database migrations"
-set -a; source "$ENV_FILE"; set +a
 npm run db:migrate >/dev/null
 npm run db:seed >/dev/null
 
@@ -156,7 +304,7 @@ npm run db:seed >/dev/null
 echo "▸ Installing systemd unit"
 cat > /etc/systemd/system/varrok-edge.service <<EOF
 [Unit]
-Description=VarrokEdge — Lightweight Proxmox Network Controller
+Description=VarrokEdge — network router & controller
 After=network-online.target dnsmasq.service
 Wants=network-online.target
 
@@ -170,9 +318,9 @@ Restart=on-failure
 RestartSec=3s
 StandardOutput=journal
 StandardError=journal
-# Runs as root (intentional for an appliance LXC) but the blast radius of any
-# code-execution bug is bounded: capabilities are capped to networking, no new
-# privileges may be acquired, and kernel/cgroup/namespace surfaces are locked.
+# Runs as root (intentional for a network appliance) but the blast radius of
+# any code-execution bug is bounded: capabilities are capped to networking, no
+# new privileges may be acquired, and kernel/cgroup/namespace surfaces locked.
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 NoNewPrivileges=true
@@ -252,31 +400,33 @@ fi
 # ─── Bring up service ────────────────────────────────────────────
 echo "▸ Starting varrok-edge.service"
 systemctl restart varrok-edge.service
-
 sleep 2
-if systemctl is-active --quiet varrok-edge.service; then
-  echo "  ✓ service is active"
-else
-  echo "  ✗ service failed to start — check: journalctl -u varrok-edge -e"
+if ! systemctl is-active --quiet varrok-edge.service; then
+  echo "  ✗ service failed to start — check: journalctl -u varrok-edge -e" >&2
   exit 1
 fi
 
-# ─── Output ──────────────────────────────────────────────────────
-echo ""
-echo "════════════════════════════════════════════════════════════"
-echo "  VarrokEdge installed"
-echo "════════════════════════════════════════════════════════════"
-echo "  URL       : http://$BIND_HOST:$PORT"
-echo "  Username  : admin@varrok.local"
+# ─── Done ────────────────────────────────────────────────────────
 if [[ "$FRESH_INSTALL" == "1" ]]; then
-  # Do NOT echo the password — stdout may be captured by tee/tmux/CI logs.
-  # VarrokEdge forces a password change on first sign-in regardless.
-  echo "  Password  : you'll be prompted to set one on first sign-in."
-  echo "              initial value: sudo grep '^VE_ADMIN_PASSWORD=' $ENV_FILE"
+  pw_line="Password  : set on first sign-in. Initial value:
+            sudo grep '^VE_ADMIN_PASSWORD=' $ENV_FILE"
 else
-  echo "  Password  : (unchanged — see $ENV_FILE)"
+  pw_line="Password  : unchanged (see $ENV_FILE)"
 fi
-echo ""
-echo "  Logs      : journalctl -u varrok-edge -f"
-echo "  Service   : systemctl status varrok-edge"
-echo "════════════════════════════════════════════════════════════"
+SUMMARY="VarrokEdge is installed and running.
+
+  URL       : http://$BIND_HOST:$PORT
+  Username  : admin@varrok.local
+  $pw_line
+
+  Logs      : journalctl -u varrok-edge -f
+  Service   : systemctl status varrok-edge"
+
+if [[ $INTERACTIVE -eq 1 ]]; then
+  tui_msg "$SUMMARY"
+else
+  echo ""
+  echo "════════════════════════════════════════════════════════════"
+  echo "$SUMMARY"
+  echo "════════════════════════════════════════════════════════════"
+fi
