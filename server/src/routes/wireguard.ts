@@ -6,6 +6,7 @@ import { wgPeers, wgServer } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { addPeer, listPeers, removePeer, renderPeerConf, serverInfo, ensureServerAsync, rotateServerKeys, wipe, restart, renderRemotePeerSnippet, writeServerConfig, reload, importPeerFromConfig } from '../system/wireguard';
 import { zCidr, zCidrList, zEndpoint, zWgKey, zIp, zHostname, zIpList } from '../validators';
+import { requireRole } from '../auth/middleware';
 
 const router = Router();
 
@@ -107,7 +108,9 @@ router.delete('/sites/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
-router.get('/sites/:id/remote-config', (req, res) => {
+// Credential-bearing downloads (private keys / preshared keys) — restricted
+// to Owner/Admin so a Read-only or Network user cannot enumerate peer secrets.
+router.get('/sites/:id/remote-config', requireRole('Owner', 'Admin'), (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
   try {
@@ -168,7 +171,7 @@ router.delete('/peers/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
-router.get('/peers/:id/conf', (req, res) => {
+router.get('/peers/:id/conf', requireRole('Owner', 'Admin'), (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
   const peer = db.select().from(wgPeers).where(eq(wgPeers.id, id)).get();
@@ -179,7 +182,7 @@ router.get('/peers/:id/conf', (req, res) => {
   res.send(conf);
 });
 
-router.get('/peers/:id/qr', async (req, res) => {
+router.get('/peers/:id/qr', requireRole('Owner', 'Admin'), async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ error: 'bad id' });
   try {
