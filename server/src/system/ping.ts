@@ -16,8 +16,9 @@ export interface PingResult {
  * timeout yields `{ok:false, lossPct:100}`.
  */
 export async function ping(host: string, count = 2, timeoutMs = 2500): Promise<PingResult> {
-  // Validate host — only hostnames / IPv4 / IPv6.
-  if (!/^[a-z0-9._:-]+$/i.test(host)) {
+  // Validate host — only hostnames / IPv4 / IPv6. A leading '-' is rejected
+  // so the value can never be parsed as a `ping` option flag (e.g. `-f`).
+  if (!/^[a-z0-9._:-]+$/i.test(host) || host.startsWith('-')) {
     return { host, avgMs: null, minMs: null, maxMs: null, lossPct: 100, ok: false };
   }
   const args = process.platform === 'darwin'
