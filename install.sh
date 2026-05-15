@@ -51,6 +51,13 @@ if ! command -v speedtest >/dev/null 2>&1; then
   apt-get install -y speedtest >/dev/null 2>&1 || echo "  speedtest install skipped (offline or repo unavailable)"
 fi
 
+# ─── Lock down auto-started daemons ──────────────────────────────
+# The miniupnpd package installs enabled with a stock config. VarrokEdge owns
+# its lifecycle — UPnP is off by default and only ever binds opted-in LAN
+# networks — so stop it now and let the control plane bring it up if asked.
+echo "▸ Disabling miniupnpd (VarrokEdge manages it)"
+systemctl disable --now miniupnpd >/dev/null 2>&1 || true
+
 # ─── Node.js 20 ──────────────────────────────────────────────────
 if ! command -v node >/dev/null 2>&1 || ! node -v | grep -q '^v20\|^v21\|^v22'; then
   echo "▸ Installing Node.js 20 (NodeSource)"
@@ -152,13 +159,40 @@ EOF
 systemctl daemon-reload
 systemctl enable varrok-edge.service >/dev/null
 
-# ─── Bootstrap core MASQUERADE rule ─────────────────────────────
-echo "▸ Bootstrapping NAT MASQUERADE on $WAN_IFACE"
-if ! iptables -t nat -C POSTROUTING -o "$WAN_IFACE" -j MASQUERADE 2>/dev/null; then
-  iptables -t nat -A POSTROUTING -o "$WAN_IFACE" -j MASQUERADE
-fi
+# ─── Firewall bootstrap — WAN lockdown + LAN NAT ─────────────────
+# The appliance has a routable WAN IP. Nothing it runs (web UI, dnsmasq,
+# SSH, miniupnpd …) may be reachable from the WAN side — every inbound
+# connection on $WAN_IFACE is dropped except the WireGuard listener.
+echo "▸ Bootstrapping firewall — locking down $WAN_IFACE"
 mkdir -p /etc/iptables
+
+# append an INPUT rule only if an identical one is not already present
+ipt4() { iptables  -C INPUT "$@" 2>/dev/null || iptables  -A INPUT "$@"; }
+ipt6() { ip6tables -C INPUT "$@" 2>/dev/null || ip6tables -A INPUT "$@"; }
+
+# IPv4 — LAN egress NAT (-t nat must precede the command verb)
+iptables -t nat -C POSTROUTING -o "$WAN_IFACE" -j MASQUERADE 2>/dev/null \
+  || iptables -t nat -A POSTROUTING -o "$WAN_IFACE" -j MASQUERADE
+# IPv4 — INPUT: trust loopback + LAN + established; permit only WireGuard
+# inbound on the WAN; drop everything else arriving on the WAN.
+ipt4 -i lo -j ACCEPT
+ipt4 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+ipt4 -i "$LAN_IFACE" -j ACCEPT
+ipt4 -i "$WAN_IFACE" -p udp --dport 51820 -j ACCEPT
+ipt4 -i "$WAN_IFACE" -j DROP
 iptables-save > /etc/iptables/rules.v4 || true
+
+# IPv6 — same lockdown when the stack is present. ICMPv6 must stay open
+# (NDP / PMTUD) or IPv6 breaks entirely.
+if command -v ip6tables >/dev/null 2>&1 && ip6tables -L >/dev/null 2>&1; then
+  ipt6 -i lo -j ACCEPT
+  ipt6 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  ipt6 -p ipv6-icmp -j ACCEPT
+  ipt6 -i "$LAN_IFACE" -j ACCEPT
+  ipt6 -i "$WAN_IFACE" -p udp --dport 51820 -j ACCEPT
+  ipt6 -i "$WAN_IFACE" -j DROP
+  ip6tables-save > /etc/iptables/rules.v6 || true
+fi
 
 # ─── Bring up service ────────────────────────────────────────────
 echo "▸ Starting varrok-edge.service"
