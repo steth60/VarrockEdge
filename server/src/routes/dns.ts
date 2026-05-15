@@ -4,6 +4,7 @@ import { db } from '../db/client';
 import { dnsRecords, dnsUpstreams } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { reload } from '../system/dnsmasq';
+import { zHostname, IPV4, HOSTNAME } from '../validators';
 
 const router = Router();
 
@@ -12,10 +13,21 @@ router.get('/records', (_req, res) => {
 });
 
 const recordSchema = z.object({
-  host: z.string().min(1).max(253),
+  host: zHostname,
   type: z.enum(['A', 'AAAA', 'CNAME', 'TXT']).default('A'),
-  target: z.string().min(1),
+  // A newline here would inject an arbitrary dnsmasq directive — the regex
+  // rejects it at the edge, and the renderer's noNewline() is the backstop.
+  target: z.string().min(1).max(512).regex(/^[^\r\n]+$/, 'target must be a single line'),
   ttl: z.number().int().min(0).max(86400).default(300),
+}).superRefine((val, ctx) => {
+  if (val.type === 'A' && !IPV4.test(val.target))
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['target'], message: 'A record target must be an IPv4 address' });
+  if (val.type === 'AAAA' && !/^[0-9a-fA-F:]+$/.test(val.target))
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['target'], message: 'AAAA record target must be an IPv6 address' });
+  if (val.type === 'CNAME' && !HOSTNAME.test(val.target))
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['target'], message: 'CNAME target must be a hostname' });
+  if (val.type === 'TXT' && val.target.includes(','))
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['target'], message: 'TXT target must not contain a comma' });
 });
 
 router.post('/records', async (req, res) => {
