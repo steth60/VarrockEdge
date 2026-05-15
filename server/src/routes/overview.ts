@@ -4,11 +4,16 @@ import { listServices } from '../system/services';
 import { snapshot, getIface } from '../system/metrics';
 import { config } from '../config';
 import { getExternalIp } from '../system/externalIp';
+import { getServiceHealth } from '../system/serviceHealth';
 
 const router = Router();
 
 router.get('/services', async (_req, res) => {
   res.json({ services: await listServices() });
+});
+
+router.get('/service-health', async (_req, res) => {
+  res.json(await getServiceHealth());
 });
 
 router.get('/snapshot', (_req, res) => {

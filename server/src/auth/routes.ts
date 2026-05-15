@@ -5,6 +5,7 @@ import { users } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { verify, hash } from './password';
 import { createSession, destroySession, SESSION_COOKIE, type AuthedRequest } from './middleware';
+import { recordLogin } from './loginStats';
 
 const router = Router();
 
@@ -18,10 +19,11 @@ router.post('/login', async (req, res) => {
   if (!parse.success) return res.status(400).json({ error: 'invalid input' });
   const { email, password } = parse.data;
   const u = db.select().from(users).where(eq(users.email, email)).get();
-  if (!u || u.status !== 'active') return res.status(401).json({ error: 'invalid credentials' });
+  if (!u || u.status !== 'active') { recordLogin(false); return res.status(401).json({ error: 'invalid credentials' }); }
   let ok = false;
   try { ok = await verify(u.passwordHash, password); } catch { ok = false; }
-  if (!ok) return res.status(401).json({ error: 'invalid credentials' });
+  if (!ok) { recordLogin(false); return res.status(401).json({ error: 'invalid credentials' }); }
+  recordLogin(true);
   const ip = req.ip;
   const ua = req.get('user-agent') ?? undefined;
   const sess = await createSession(u.id, ip, ua);

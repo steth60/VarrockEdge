@@ -23,6 +23,8 @@ export interface SpeedTestEvent {
   elapsed?: number;    // 0..1 progress within current phase
   result?: SpeedTestResult;  // populated on phase=done
   msg?: string;
+  server?: string | null;    // the test server, once known
+  isp?: string | null;       // the detected ISP, once known
 }
 
 const DOWNLOAD_SECS = 30;
@@ -42,6 +44,10 @@ export function runSpeedTest(trigger: 'manual' | 'scheduled' = 'manual'): EventE
   let isp: string | null = null;
   let server: string | null = null;
   let usingOokla = false;
+
+  // Every event carries the latest known test server + ISP so the UI can show
+  // "who we're testing to" as soon as Ookla reports it.
+  const send = (ev: SpeedTestEvent) => emitter.emit('data', { ...ev, server, isp });
 
   const finish = (source: 'ookla' | 'synthetic') => {
     const avg = (xs: number[]) => xs.length === 0 ? 0 : xs.reduce((a, b) => a + b, 0) / xs.length;
@@ -67,7 +73,7 @@ export function runSpeedTest(trigger: 'manual' | 'scheduled' = 'manual'): EventE
     } catch (err) {
       log.warn({ err }, 'speedtest persist failed');
     }
-    emitter.emit('data', { phase: 'done', result } as SpeedTestEvent);
+    send({ phase: 'done', result } as SpeedTestEvent);
     emitter.emit('end');
   };
 
@@ -94,15 +100,15 @@ export function runSpeedTest(trigger: 'manual' | 'scheduled' = 'manual'): EventE
             if (j.server?.name) server = j.server.name;
             if (j.type === 'ping' && j.ping?.latency) {
               ping = j.ping.latency;
-              emitter.emit('data', { phase: 'ping', pingMs: ping, elapsed: j.ping.progress ?? 1 } as SpeedTestEvent);
+              send({ phase: 'ping', pingMs: ping, elapsed: j.ping.progress ?? 1 } as SpeedTestEvent);
             } else if (j.type === 'download' && j.download?.bandwidth) {
               const mbps = j.download.bandwidth * 8 / 1_000_000;
               downSamples.push(mbps);
-              emitter.emit('data', { phase: 'download', mbps, elapsed: j.download.progress ?? 0 } as SpeedTestEvent);
+              send({ phase: 'download', mbps, elapsed: j.download.progress ?? 0 } as SpeedTestEvent);
             } else if (j.type === 'upload' && j.upload?.bandwidth) {
               const mbps = j.upload.bandwidth * 8 / 1_000_000;
               upSamples.push(mbps);
-              emitter.emit('data', { phase: 'upload', mbps, elapsed: j.upload.progress ?? 0 } as SpeedTestEvent);
+              send({ phase: 'upload', mbps, elapsed: j.upload.progress ?? 0 } as SpeedTestEvent);
             } else if (j.type === 'result') {
               if (j.download?.bandwidth) downSamples = [j.download.bandwidth * 8 / 1_000_000];
               if (j.upload?.bandwidth)   upSamples   = [j.upload.bandwidth   * 8 / 1_000_000];
@@ -150,7 +156,7 @@ export function runSpeedTest(trigger: 'manual' | 'scheduled' = 'manual'): EventE
     const pingTimer = setInterval(() => {
       if (cancelled) return clearInterval(pingTimer);
       t += stepMs;
-      emitter.emit('data', { phase: 'ping', pingMs: ping, elapsed: Math.min(1, t / 2000) } as SpeedTestEvent);
+      send({ phase: 'ping', pingMs: ping, elapsed: Math.min(1, t / 2000) } as SpeedTestEvent);
       if (t >= 2000) {
         clearInterval(pingTimer);
         phase = 'download';
@@ -163,7 +169,7 @@ export function runSpeedTest(trigger: 'manual' | 'scheduled' = 'manual'): EventE
           const env = progress < 0.3 ? Math.sin(progress / 0.3 * Math.PI / 2) : 0.92 + Math.random() * 0.16;
           const mbps = Math.max(1, peakDown * env);
           downSamples.push(mbps);
-          emitter.emit('data', { phase: 'download', mbps, elapsed: progress } as SpeedTestEvent);
+          send({ phase: 'download', mbps, elapsed: progress } as SpeedTestEvent);
           if (t >= DOWNLOAD_SECS * 1000) {
             clearInterval(dlTimer);
             phase = 'upload';
@@ -175,7 +181,7 @@ export function runSpeedTest(trigger: 'manual' | 'scheduled' = 'manual'): EventE
               const env = progress < 0.3 ? Math.sin(progress / 0.3 * Math.PI / 2) : 0.92 + Math.random() * 0.16;
               const mbps = Math.max(1, peakUp * env);
               upSamples.push(mbps);
-              emitter.emit('data', { phase: 'upload', mbps, elapsed: progress } as SpeedTestEvent);
+              send({ phase: 'upload', mbps, elapsed: progress } as SpeedTestEvent);
               if (t >= UPLOAD_SECS * 1000) {
                 clearInterval(ulTimer);
                 finish('synthetic');
@@ -190,7 +196,7 @@ export function runSpeedTest(trigger: 'manual' | 'scheduled' = 'manual'): EventE
   emitter.cancel = () => {
     cancelled = true;
     if (proc) proc.kill('SIGKILL');
-    emitter.emit('data', { phase: 'error', msg: 'cancelled' } as SpeedTestEvent);
+    send({ phase: 'error', msg: 'cancelled' } as SpeedTestEvent);
     emitter.emit('end');
   };
 }

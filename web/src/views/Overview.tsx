@@ -428,7 +428,7 @@ function LatencyPills() {
 }
 
 interface SpeedResult { downloadMbps: number; uploadMbps: number; pingMs: number; isp: string | null; server: string | null; source: string; ts: number }
-interface SpeedEvent { phase: 'ping' | 'download' | 'upload' | 'done' | 'error'; mbps?: number; pingMs?: number; elapsed?: number; result?: SpeedResult }
+interface SpeedEvent { phase: 'ping' | 'download' | 'upload' | 'done' | 'error'; mbps?: number; pingMs?: number; elapsed?: number; result?: SpeedResult; server?: string | null; isp?: string | null }
 
 interface HistoryRun {
   id: number; ts: number;
@@ -455,6 +455,7 @@ function SpeedTestCard() {
   const [progress, setProgress] = useState(0);
   const [lastRun, setLastRun] = useState<HistoryRun | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [testServer, setTestServer] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
 
   // Fetch the most recent run so the "idle" card shows real numbers instead of dashes.
@@ -471,11 +472,13 @@ function SpeedTestCard() {
     setResult(null);
     setPhase('ping');
     setProgress(0);
+    setTestServer(null);
     const es = new EventSource('/api/probes/speedtest/stream', { withCredentials: true });
     esRef.current = es;
     es.onmessage = (m) => {
       try {
         const ev: SpeedEvent = JSON.parse(m.data);
+        if (ev.server) setTestServer(ev.server);
         if (ev.phase === 'ping') {
           setPhase('ping');
           if (ev.pingMs !== undefined) setLivePing(ev.pingMs);
@@ -511,9 +514,9 @@ function SpeedTestCard() {
   // Convenience: a single render path for idle (with optional lastRun) and done.
   if (phase === 'idle' || (phase === 'done' && result)) {
     const showing = phase === 'done' && result
-      ? { down: result.downloadMbps, up: result.uploadMbps, ping: result.pingMs, source: result.source, isp: result.isp, ts: result.ts, label: 'just now' }
+      ? { down: result.downloadMbps, up: result.uploadMbps, ping: result.pingMs, source: result.source, isp: result.isp, server: result.server, ts: result.ts, label: 'just now' }
       : lastRun
-      ? { down: lastRun.downloadMbps, up: lastRun.uploadMbps, ping: lastRun.pingMs, source: lastRun.source, isp: lastRun.isp, ts: lastRun.ts, label: timeAgo(lastRun.ts) }
+      ? { down: lastRun.downloadMbps, up: lastRun.uploadMbps, ping: lastRun.pingMs, source: lastRun.source, isp: lastRun.isp, server: lastRun.server, ts: lastRun.ts, label: timeAgo(lastRun.ts) }
       : null;
 
     return (
@@ -552,7 +555,7 @@ function SpeedTestCard() {
           <div className="flex items-center justify-between gap-2 mt-2 text-[10px]">
             <span className="text-zinc-500 truncate">
               {showing
-                ? <>last run · <span className="font-mono">{showing.label}</span>{showing.isp && showing.source !== 'synthetic' ? <> · <span className="font-mono">{showing.isp}</span></> : null}{showing.source === 'synthetic' ? <span className="text-amber-300/80"> · synthetic</span> : null}</>
+                ? <>last run · <span className="font-mono">{showing.label}</span>{showing.server && showing.source !== 'synthetic' ? <> · via <span className="font-mono">{showing.server}</span></> : null}{showing.source === 'synthetic' ? <span className="text-amber-300/80"> · synthetic</span> : null}</>
                 : 'no history · auto runs at 12:00 / 00:00'}
             </span>
             <button onClick={() => setHistoryOpen(true)} className="text-cyan-300 hover:text-cyan-200 inline-flex items-center gap-1 shrink-0">
@@ -593,9 +596,10 @@ function SpeedTestCard() {
       <div className="mt-3"><SpeedTestGraph down={downSamples} up={upSamples} /></div>
 
       <div className="mt-2 space-y-1">
-        <div className="flex items-center justify-between text-[10px] text-zinc-500">
-          <span>{phase === 'ping' ? 'Latency probe' : phase === 'download' ? 'Download · ~30s' : phase === 'upload' ? 'Upload · ~30s' : 'Error'}</span>
-          <span className="font-mono">{Math.round(progress * 100)}%</span>
+        <div className="flex items-center justify-between gap-2 text-[10px] text-zinc-500">
+          <span className="shrink-0">{phase === 'ping' ? 'Latency probe' : phase === 'download' ? 'Download · ~30s' : phase === 'upload' ? 'Upload · ~30s' : 'Error'}</span>
+          <span className="truncate text-right">{testServer ? <>via <span className="text-zinc-300">{testServer}</span></> : 'selecting server…'}</span>
+          <span className="font-mono shrink-0">{Math.round(progress * 100)}%</span>
         </div>
         <div className="h-1 rounded-full bg-zinc-800 overflow-hidden">
           <div className="h-full rounded-full transition-all"
@@ -1408,24 +1412,43 @@ function TopStrip({ title, entries }: { title: string; entries: typeof TOP_CLIEN
   );
 }
 
+interface HealthMetric { success: number | null; detail: string }
+interface ServiceHealth { dhcpAck: HealthMetric; dnsFailures: HealthMetric; natTranslate: HealthMetric; authUi: HealthMetric }
+
 function ServiceHealthCard({ peers, threats }: { peers: WgPeer[]; threats: Threat[] }) {
   const wgConnected = peers.length === 0 ? 100 : (peers.filter(p => p.status === 'connected').length / peers.length) * 100;
   const critOpen    = threats.filter(t => t.severity === 'critical' && t.status !== 'acked').length;
+  const [sh, setSh] = useState<ServiceHealth | null>(null);
+
+  useEffect(() => {
+    const load = () => api.get<ServiceHealth>('/api/overview/service-health').then(setSh).catch(() => {});
+    load();
+    const t = setInterval(load, 60_000);
+    return () => clearInterval(t);
+  }, []);
+
   return (
     <Card title="Service health" subtitle="Live signals from real subsystems"
           action={<Badge variant={critOpen === 0 ? 'success' : 'warn'} size="sm" icon={critOpen === 0 ? 'CheckCircle2' : 'AlertTriangle'}>{critOpen === 0 ? 'nominal' : `${critOpen} critical`}</Badge>}>
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
         <HealthBar label="WG handshake"   success={wgConnected} count={peers.length === 0 ? 'no peers' : `${peers.filter(p => p.status === 'connected').length}/${peers.length} up`} />
         <HealthBar label="Critical threats" success={Math.max(0, 100 - critOpen * 10)} count={`${critOpen} open`} tone={critOpen > 0 ? 'danger' : undefined} />
-        <HealthBarUnknown label="DHCP ACK rate" detail="needs dnsmasq journal scrape" />
-        <HealthBarUnknown label="DNS SERVFAIL" detail="needs dnsmasq --log-queries" />
-        <HealthBarUnknown label="NAT translate" detail="needs conntrack -S sampling" />
-        <HealthBarUnknown label="TLS handshake" detail="no upstream proxy detected" />
-        <HealthBarUnknown label="DoH/DoT" detail="not wired" />
-        <HealthBarUnknown label="Auth (web UI)" detail="needs auth.login.fail/success" />
+        <MetricBar label="DHCP ACK rate"  m={sh?.dhcpAck} />
+        <MetricBar label="DNS SERVFAIL"   m={sh?.dnsFailures} />
+        <MetricBar label="NAT translate"  m={sh?.natTranslate} />
+        <MetricBar label="Auth (web UI)"  m={sh?.authUi} />
       </div>
     </Card>
   );
+}
+
+// Renders a real HealthBar when the metric has data, else the greyed-out
+// placeholder (still loading, or the data source is unavailable).
+function MetricBar({ label, m }: { label: string; m?: HealthMetric }) {
+  if (!m) return <HealthBarUnknown label={label} detail="loading…" />;
+  if (m.success === null) return <HealthBarUnknown label={label} detail={m.detail} />;
+  const tone = m.success >= 99 ? undefined : m.success >= 90 ? 'warn' : 'danger';
+  return <HealthBar label={label} success={m.success} count={m.detail} tone={tone} />;
 }
 
 function HealthBarUnknown({ label, detail }: { label: string; detail: string }) {

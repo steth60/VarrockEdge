@@ -9,6 +9,7 @@ interface SpeedResult {
 interface SpeedEvent {
   phase: 'ping' | 'download' | 'upload' | 'done' | 'error';
   mbps?: number; pingMs?: number; elapsed?: number; result?: SpeedResult; msg?: string;
+  server?: string | null; isp?: string | null;
 }
 interface HistoryRun {
   id: number; ts: number; downloadMbps: number; uploadMbps: number; pingMs: number;
@@ -55,6 +56,7 @@ export function SpeedTestMainView() {
   const [result, setResult] = useState<SpeedResult | null>(null);
   const [progress, setProgress] = useState(0);
   const [runs, setRuns] = useState<HistoryRun[]>([]);
+  const [testServer, setTestServer] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
 
   const loadHistory = () => api.get<{ runs: HistoryRun[] }>('/api/probes/speedtest/history?limit=12')
@@ -64,12 +66,13 @@ export function SpeedTestMainView() {
 
   const start = () => {
     if (phase === 'ping' || phase === 'download' || phase === 'upload') return;
-    setDown([]); setUp([]); setLivePing(null); setResult(null); setProgress(0); setPhase('ping');
+    setDown([]); setUp([]); setLivePing(null); setResult(null); setProgress(0); setPhase('ping'); setTestServer(null);
     const es = new EventSource('/api/probes/speedtest/stream', { withCredentials: true });
     esRef.current = es;
     es.onmessage = (m) => {
       try {
         const ev: SpeedEvent = JSON.parse(m.data);
+        if (ev.server) setTestServer(ev.server);
         if (ev.phase === 'ping') {
           setPhase('ping');
           if (ev.pingMs !== undefined) setLivePing(ev.pingMs);
@@ -131,9 +134,10 @@ export function SpeedTestMainView() {
 
       {running && (
         <div className="mt-3 space-y-1">
-          <div className="flex items-center justify-between text-[10.5px] text-zinc-500">
-            <span>{phase === 'ping' ? 'Latency probe' : phase === 'download' ? 'Download · ~30s' : 'Upload · ~30s'}</span>
-            <span className="font-mono">{Math.round(progress * 100)}%</span>
+          <div className="flex items-center justify-between gap-2 text-[10.5px] text-zinc-500">
+            <span className="shrink-0">{phase === 'ping' ? 'Latency probe' : phase === 'download' ? 'Download · ~30s' : 'Upload · ~30s'}</span>
+            <span className="truncate text-right">{testServer ? <>testing via <span className="text-zinc-300">{testServer}</span></> : 'selecting server…'}</span>
+            <span className="font-mono shrink-0">{Math.round(progress * 100)}%</span>
           </div>
           <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden">
             <div className="h-full rounded-full transition-all"
@@ -157,6 +161,7 @@ export function SpeedTestMainView() {
             <thead>
               <tr className="text-left text-[10px] uppercase tracking-[0.08em] text-zinc-500 border-b border-zinc-800/70">
                 <th className="font-medium py-1.5">When</th>
+                <th className="font-medium py-1.5 pl-3">Server</th>
                 <th className="font-medium py-1.5 text-right">Down</th>
                 <th className="font-medium py-1.5 text-right">Up</th>
                 <th className="font-medium py-1.5 text-right">Ping</th>
@@ -168,6 +173,7 @@ export function SpeedTestMainView() {
               {runs.map(r => (
                 <tr key={r.id} className="hover:bg-zinc-900/30">
                   <td className="py-1.5 font-mono text-zinc-400" title={new Date(r.ts).toISOString()}>{timeAgo(r.ts)}</td>
+                  <td className="py-1.5 pl-3 text-zinc-400 truncate max-w-[140px]">{r.server ?? '—'}</td>
                   <td className="py-1.5 text-right font-mono text-emerald-300">{r.downloadMbps.toFixed(1)}</td>
                   <td className="py-1.5 text-right font-mono text-cyan-300">{r.uploadMbps.toFixed(1)}</td>
                   <td className="py-1.5 text-right font-mono text-zinc-100">{r.pingMs.toFixed(0)}</td>
