@@ -5,6 +5,7 @@ import { users, sessions } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { hash } from '../auth/password';
 import { requireRole, type AuthedRequest } from '../auth/middleware';
+import { zPassword } from '../validators';
 
 const router = Router();
 
@@ -25,7 +26,7 @@ const inviteSchema = z.object({
   email: z.string().email(),
   name: z.string().min(1).optional(),
   role: z.enum(['Owner', 'Admin', 'Network', 'Read-only']).default('Read-only'),
-  password: z.string().min(8),
+  password: zPassword,
 });
 
 router.post('/', requireRole('Owner', 'Admin'), async (req, res) => {
@@ -50,7 +51,7 @@ router.post('/', requireRole('Owner', 'Admin'), async (req, res) => {
 const updateSchema = z.object({
   role: z.enum(['Owner', 'Admin', 'Network', 'Read-only']).optional(),
   status: z.enum(['active', 'invited', 'suspended']).optional(),
-  password: z.string().min(8).optional(),
+  password: zPassword.optional(),
   mfaEnabled: z.boolean().optional(),
 });
 
