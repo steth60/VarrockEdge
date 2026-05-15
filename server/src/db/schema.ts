@@ -9,6 +9,11 @@ export const users = sqliteTable('users', {
   role: text('role').notNull().default('Admin'), // Owner, Admin, Network, Read-only
   status: text('status').notNull().default('active'), // active, invited, suspended
   mfaEnabled: integer('mfa_enabled', { mode: 'boolean' }).notNull().default(false),
+  // Forced first-login password change (seeded admin starts true).
+  mustChangePassword: integer('must_change_password', { mode: 'boolean' }).notNull().default(false),
+  // Per-account brute-force lockout.
+  failedCount: integer('failed_count').notNull().default(0),
+  lockedUntil: integer('locked_until', { mode: 'timestamp' }),
   lastSeenAt: integer('last_seen_at', { mode: 'timestamp' }),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull().default(sql`CURRENT_TIMESTAMP`),
 });
