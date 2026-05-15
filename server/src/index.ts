@@ -1,5 +1,6 @@
 import express from 'express';
 import cookieParser from 'cookie-parser';
+import helmet from 'helmet';
 import http from 'node:http';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -8,6 +9,7 @@ import { config } from './config';
 import { log } from './logger';
 import { runMigrations } from './db/migrate';
 import { loadUser, requireAuth, requireRoleForMutation } from './auth/middleware';
+import { csrfGuard } from './auth/csrf';
 import authRoutes from './auth/routes';
 import overviewRoutes from './routes/overview';
 import metricsRoutes from './routes/metrics';
@@ -72,9 +74,31 @@ async function main() {
 
   const app = express();
   app.disable('x-powered-by');
+  // Trust the upstream TLS terminator (Caddy/nginx) so req.secure reflects
+  // X-Forwarded-Proto — the session cookie then gets its Secure flag in prod.
+  app.set('trust proxy', 1);
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        // The SPA uses inline style attributes (style={{...}}) pervasively.
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", 'data:'],
+        fontSrc: ["'self'"],
+        connectSrc: ["'self'"],
+        objectSrc: ["'none'"],
+        frameAncestors: ["'none'"],
+        baseUri: ["'self'"],
+      },
+    },
+    // Plain HTTP behind an optional upstream TLS proxy — the proxy owns HSTS.
+    hsts: false,
+  }));
   app.use(express.json({ limit: '1mb' }));
   app.use(cookieParser());
   app.use(loadUser);
+  app.use(csrfGuard);
 
   // Public routes
   app.use('/api/auth', authRoutes);
