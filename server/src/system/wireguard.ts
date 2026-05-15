@@ -31,6 +31,128 @@ export async function genKeys(): Promise<KeyTriple> {
   return { privateKey: priv, publicKey: pub, presharedKey: psk };
 }
 
+// DER prefixes for X25519 keys — let us round-trip raw 32-byte curve25519
+// keys through Node's crypto without shelling out to `wg pubkey`.
+const X25519_PKCS8_PREFIX = Buffer.from('302e020100300506032b656e04220420', 'hex');
+
+/** Derive the WireGuard public key from a base64 private key (curve25519). */
+export function derivePublicKey(privateKeyB64: string): string {
+  const raw = Buffer.from(privateKeyB64, 'base64');
+  if (raw.length !== 32) throw new Error('private key must be 32 bytes of base64');
+  const der = Buffer.concat([X25519_PKCS8_PREFIX, raw]);
+  const priv = crypto.createPrivateKey({ key: der, format: 'der', type: 'pkcs8' });
+  const spki = crypto.createPublicKey(priv).export({ type: 'spki', format: 'der' });
+  return spki.subarray(spki.length - 32).toString('base64');
+}
+
+export interface ParsedWgConfig {
+  iface: { privateKey?: string; address?: string; dns?: string; mtu?: number; listenPort?: number };
+  peers: { publicKey?: string; presharedKey?: string; allowedIps?: string; endpoint?: string; keepalive?: number }[];
+}
+
+/** Parse a WireGuard .conf (INI-like) into structured sections. */
+export function parseWgConfig(text: string): ParsedWgConfig {
+  const cfg: ParsedWgConfig = { iface: {}, peers: [] };
+  let section: 'iface' | 'peer' | null = null;
+  let cur: ParsedWgConfig['peers'][number] | null = null;
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.replace(/#.*$/, '').trim();
+    if (!line) continue;
+    const sec = line.match(/^\[(\w+)\]$/i);
+    if (sec) {
+      const name = sec[1].toLowerCase();
+      if (name === 'interface') { section = 'iface'; cur = null; }
+      else if (name === 'peer') { section = 'peer'; cur = {}; cfg.peers.push(cur); }
+      else { section = null; cur = null; }
+      continue;
+    }
+    const kv = line.match(/^([A-Za-z]+)\s*=\s*(.+)$/);
+    if (!kv) continue;
+    const key = kv[1].toLowerCase();
+    const val = kv[2].trim();
+    if (section === 'iface') {
+      if (key === 'privatekey') cfg.iface.privateKey = val;
+      else if (key === 'address') cfg.iface.address = val;
+      else if (key === 'dns') cfg.iface.dns = val;
+      else if (key === 'mtu') cfg.iface.mtu = Number(val) || undefined;
+      else if (key === 'listenport') cfg.iface.listenPort = Number(val) || undefined;
+    } else if (section === 'peer' && cur) {
+      if (key === 'publickey') cur.publicKey = val;
+      else if (key === 'presharedkey') cur.presharedKey = val;
+      else if (key === 'allowedips') cur.allowedIps = val;
+      else if (key === 'endpoint') cur.endpoint = val;
+      else if (key === 'persistentkeepalive') cur.keepalive = Number(val) || undefined;
+    }
+  }
+  return cfg;
+}
+
+export interface ImportPeerResult {
+  peer: typeof wgPeers.$inferSelect;
+  warnings: string[];
+}
+
+/**
+ * Register a road-warrior peer from a pasted/uploaded client .conf.
+ * The client config's [Interface] is the peer (private key + tunnel IP);
+ * its [Peer] block describes a server — we validate it against ours.
+ */
+export async function importPeerFromConfig(name: string, configText: string): Promise<ImportPeerResult> {
+  const server = ensureServer();
+  if (!server) throw new Error('wg server not initialized');
+  const parsed = parseWgConfig(configText);
+  const warnings: string[] = [];
+
+  const privateKey = parsed.iface.privateKey;
+  if (!privateKey) throw new Error('config has no [Interface] PrivateKey — cannot import as a road-warrior peer');
+  if (!parsed.iface.address) throw new Error('config has no [Interface] Address');
+
+  let publicKey: string;
+  try {
+    publicKey = derivePublicKey(privateKey);
+  } catch (e: any) {
+    throw new Error(`could not derive public key from PrivateKey: ${e?.message ?? e}`);
+  }
+
+  const existing = db.select().from(wgPeers).where(eq(wgPeers.publicKey, publicKey)).get();
+  if (existing) throw new Error(`a peer with this key already exists ("${existing.name}")`);
+
+  // The [Peer] block of a client config is the server it dials.
+  const srvPeer = parsed.peers[0];
+  if (srvPeer?.publicKey && srvPeer.publicKey !== server.publicKey) {
+    warnings.push('config’s [Peer] PublicKey does not match this appliance — the .conf was issued for a different WireGuard server');
+  }
+  if (srvPeer?.endpoint && server.publicEndpoint) {
+    const host = srvPeer.endpoint.split(':')[0];
+    if (host && host !== server.publicEndpoint) {
+      warnings.push(`config’s Endpoint (${srvPeer.endpoint}) differs from this appliance’s public endpoint (${server.publicEndpoint})`);
+    }
+  }
+  if (parsed.peers.length > 1) {
+    warnings.push(`config had ${parsed.peers.length} [Peer] blocks — only the first was used`);
+  }
+
+  const allowedIps = parsed.iface.address.split(',')
+    .map(s => s.trim()).filter(Boolean)
+    .map(a => a.includes('/') ? a : `${a}/32`)
+    .join(',');
+
+  const row = db.insert(wgPeers).values({
+    name,
+    publicKey,
+    privateKey,
+    presharedKey: srvPeer?.presharedKey ?? null,
+    allowedIps,
+    keepalive: srvPeer?.keepalive ?? 25,
+    kind: 'road-warrior',
+    remoteSubnet: null,
+    remoteEndpoint: null,
+  }).returning().get();
+  await writeServerConfig();
+  await reload();
+  return { peer: row, warnings };
+}
+
 function ensureServer() {
   let row = db.select().from(wgServer).get();
   if (row) return row;

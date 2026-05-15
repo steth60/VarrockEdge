@@ -4,7 +4,7 @@ import QRCode from 'qrcode';
 import { db } from '../db/client';
 import { wgPeers, wgServer } from '../db/schema';
 import { eq } from 'drizzle-orm';
-import { addPeer, listPeers, removePeer, renderPeerConf, serverInfo, ensureServerAsync, rotateServerKeys, wipe, restart, renderRemotePeerSnippet, writeServerConfig, reload } from '../system/wireguard';
+import { addPeer, listPeers, removePeer, renderPeerConf, serverInfo, ensureServerAsync, rotateServerKeys, wipe, restart, renderRemotePeerSnippet, writeServerConfig, reload, importPeerFromConfig } from '../system/wireguard';
 
 const router = Router();
 
@@ -137,6 +137,22 @@ router.post('/peers', async (req, res) => {
     res.json({ peer: row });
   } catch (err: any) {
     res.status(500).json({ error: err?.message ?? 'add failed' });
+  }
+});
+
+router.post('/peers/import', async (req, res) => {
+  const schema = z.object({
+    name: z.string().min(1),
+    config: z.string().min(20),
+  });
+  const parse = schema.safeParse(req.body);
+  if (!parse.success) return res.status(400).json({ error: 'invalid input', issues: parse.error.issues });
+  try {
+    await ensureServerAsync();
+    const r = await importPeerFromConfig(parse.data.name, parse.data.config);
+    res.json(r);
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message ?? 'import failed' });
   }
 });
 

@@ -19,6 +19,7 @@ export function Wireguard() {
   const [addOpen, setAddOpen] = useState(false);
   const [newPeerId, setNewPeerId] = useState<number | null>(null);
   const [newPeerName, setNewPeerName] = useState('');
+  const [importOpen, setImportOpen] = useState(false);
 
   const reload = () => {
     api.get<{ server: Server }>('/api/wireguard/server').then(r => setServer(r.server)).catch(() => {});
@@ -84,8 +85,11 @@ export function Wireguard() {
             <Button variant="primary" size="md" icon="UserPlus" onClick={() => setAddOpen(true)}>Road-warrior</Button>
             <Button variant="secondary" size="md" icon="Network" onClick={() => setTab('s2s')}>Site-to-site</Button>
           </div>
+          <Button variant="ghost" size="sm" icon="Upload" className="w-full mt-2" onClick={() => setImportOpen(true)}>
+            Import existing .conf
+          </Button>
           <p className="text-[11.5px] text-zinc-500 mt-3 leading-relaxed">
-            Road-warrior peers get a single /32 + downloadable .conf. Site-to-site links span entire subnets bidirectionally.
+            Road-warrior peers get a single /32 + downloadable .conf. Import registers a peer from a client config you already have.
           </p>
         </Card>
       </div>
@@ -155,7 +159,115 @@ export function Wireguard() {
           </div>
         </div>
       </Modal>
+
+      <ImportPeerModal open={importOpen} onClose={() => setImportOpen(false)} onImported={reload} />
     </div>
+  );
+}
+
+function ImportPeerModal({ open, onClose, onImported }: { open: boolean; onClose: () => void; onImported: () => void }) {
+  const [name, setName] = useState('');
+  const [config, setConfig] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [warnings, setWarnings] = useState<string[] | null>(null);
+
+  const reset = () => { setName(''); setConfig(''); setBusy(false); setError(null); setWarnings(null); };
+  const close = () => { reset(); onClose(); };
+
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setConfig(await file.text());
+    if (!name) setName(file.name.replace(/\.conf$/i, ''));
+    e.target.value = '';
+  };
+
+  const submit = async () => {
+    if (!name.trim() || config.trim().length < 20) { setError('peer name and a .conf body are required'); return; }
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api.post<{ warnings: string[] }>('/api/wireguard/peers/import', { name: name.trim(), config });
+      setWarnings(r.warnings ?? []);
+      onImported();
+    } catch (err: any) {
+      setError(err?.message ?? 'import failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      open={open}
+      onClose={close}
+      title="Import WireGuard config"
+      subtitle="Register a road-warrior peer from an existing client .conf"
+      size="lg"
+      footer={
+        warnings !== null ? (
+          <Button variant="primary" icon="Check" onClick={close}>Done</Button>
+        ) : (
+          <>
+            <Button variant="ghost" onClick={close}>Cancel</Button>
+            <Button variant="primary" icon="Upload" onClick={submit} disabled={busy || !name.trim() || config.trim().length < 20}>
+              {busy ? 'Importing…' : 'Import peer'}
+            </Button>
+          </>
+        )
+      }>
+      {warnings !== null ? (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 text-emerald-300 text-[13px] font-medium">
+            <Icon name="CheckCircle2" size={16} />
+            Peer “{name}” imported and added to wg0.
+          </div>
+          {warnings.length > 0 ? (
+            <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 space-y-1.5">
+              <div className="text-[11px] uppercase tracking-[0.08em] text-amber-300 font-medium">Warnings</div>
+              {warnings.map((w, i) => (
+                <div key={i} className="text-[11.5px] text-amber-200/90 flex gap-1.5">
+                  <Icon name="AlertTriangle" size={13} className="shrink-0 mt-0.5" />{w}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-[11.5px] text-zinc-500">Server key and endpoint matched this appliance — no warnings.</p>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <Field label="Peer name">
+            <Input placeholder="proxmox-varrok-client-1" value={name} onChange={(e) => setName(e.target.value)} />
+          </Field>
+          <Field label="Client .conf" hint="Paste the config, or upload a file. The [Interface] block becomes the peer.">
+            <textarea
+              spellCheck={false}
+              value={config}
+              onChange={(e) => setConfig(e.target.value)}
+              placeholder={'[Interface]\nPrivateKey = …\nAddress = 10.10.0.5/32\n\n[Peer]\nPublicKey = …\nEndpoint = host:51820'}
+              className="font-mono text-[11.5px] leading-relaxed min-h-[180px] px-3 py-2 rounded-lg bg-zinc-900/70 border border-zinc-700/70 text-zinc-100 placeholder:text-zinc-600 hover:border-zinc-600 focus:border-cyan-400/60 focus:bg-zinc-900 transition-colors resize-y"
+            />
+          </Field>
+          <div className="flex items-center gap-3">
+            <label className="inline-flex items-center gap-2 h-7 px-2.5 rounded-md text-[11.5px] font-medium text-zinc-300 bg-zinc-800/60 hover:bg-zinc-800 cursor-pointer transition-colors">
+              <Icon name="FileUp" size={12} />
+              Upload .conf
+              <input type="file" accept=".conf,.txt,text/plain" className="hidden" onChange={onFile} />
+            </label>
+            <span className="text-[11px] text-zinc-500">
+              The private key is derived to a public key locally — it routes the client through this tunnel.
+            </span>
+          </div>
+          {error && (
+            <div className="p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-[11.5px] text-rose-300 flex gap-1.5">
+              <Icon name="AlertCircle" size={13} className="shrink-0 mt-0.5" />{error}
+            </div>
+          )}
+        </div>
+      )}
+    </Modal>
   );
 }
 
