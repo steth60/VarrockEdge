@@ -5,8 +5,13 @@ import { db } from '../db/client';
 import { wgPeers, wgServer } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { addPeer, listPeers, removePeer, renderPeerConf, serverInfo, ensureServerAsync, rotateServerKeys, wipe, restart, renderRemotePeerSnippet, writeServerConfig, reload, importPeerFromConfig } from '../system/wireguard';
+import { zCidr, zCidrList, zEndpoint, zWgKey, zIp, zHostname, zIpList } from '../validators';
 
 const router = Router();
+
+// A display name written into wg0.conf as a `# comment` — must be single-line
+// or it could break out of the comment and inject a directive.
+const zName = z.string().min(1).max(64).regex(/^[^\r\n]+$/, 'name must be a single line');
 
 router.get('/server', async (_req, res) => {
   await ensureServerAsync().catch(() => {});
@@ -27,11 +32,11 @@ router.get('/server', async (_req, res) => {
 router.patch('/server', async (req, res) => {
   const schema = z.object({
     listenPort: z.number().int().min(1).max(65535).optional(),
-    tunnelCidr: z.string().optional(),
+    tunnelCidr: zCidr.optional(),
     mtu: z.number().int().min(576).max(9000).optional(),
-    publicEndpoint: z.string().nullable().optional(),
-    dnsPush: z.string().optional(),
-    defaultAllowedIps: z.string().optional(),
+    publicEndpoint: z.union([zIp, zHostname]).nullable().optional(),
+    dnsPush: zIpList.optional(),
+    defaultAllowedIps: zCidrList.optional(),
   });
   const parse = schema.safeParse(req.body);
   if (!parse.success) return res.status(400).json({ error: 'invalid input', issues: parse.error.issues });
@@ -67,11 +72,11 @@ router.get('/sites', async (_req, res) => {
 });
 
 const siteSchema = z.object({
-  name: z.string().min(1),
-  remoteSubnet: z.string().regex(/^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/, 'expected CIDR like 10.20.0.0/24'),
-  remotePublicKey: z.string().min(40),
-  remoteEndpoint: z.string().optional(),
-  presharedKey: z.string().optional(),
+  name: zName,
+  remoteSubnet: zCidr,
+  remotePublicKey: zWgKey,
+  remoteEndpoint: zEndpoint.optional(),
+  presharedKey: zWgKey.optional(),
   keepalive: z.number().int().min(0).max(3600).optional(),
 });
 
@@ -120,12 +125,12 @@ router.get('/peers', async (_req, res) => {
 });
 
 const peerSchema = z.object({
-  name: z.string().min(1),
-  allowedIps: z.string().optional(),
+  name: zName,
+  allowedIps: zCidrList.optional(),
   keepalive: z.number().int().min(0).max(3600).optional(),
   kind: z.enum(['road-warrior', 'site']).optional(),
-  remoteSubnet: z.string().optional(),
-  remoteEndpoint: z.string().optional(),
+  remoteSubnet: zCidr.optional(),
+  remoteEndpoint: zEndpoint.optional(),
 });
 
 router.post('/peers', async (req, res) => {
@@ -142,8 +147,8 @@ router.post('/peers', async (req, res) => {
 
 router.post('/peers/import', async (req, res) => {
   const schema = z.object({
-    name: z.string().min(1),
-    config: z.string().min(20),
+    name: zName,
+    config: z.string().min(20).max(8192),
   });
   const parse = schema.safeParse(req.body);
   if (!parse.success) return res.status(400).json({ error: 'invalid input', issues: parse.error.issues });
