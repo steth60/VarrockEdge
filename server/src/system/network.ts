@@ -7,6 +7,7 @@ import { exec } from './exec';
 import { parseLeases, reload as dnsmasqReload } from './dnsmasq';
 import { applyUpnp } from './upnp';
 import { log } from '../logger';
+import { assertSafeArg, assertMatches, IPV4 } from '../validators';
 
 // ─── CIDR helpers ───────────────────────────────────────────────────
 export function prefixOf(subnet: string): number {
@@ -56,6 +57,11 @@ export function getDefaultNetwork(): Network | undefined {
 export async function ensureNetworkIface(n: Network): Promise<void> {
   if (!n.vlanId) return;
   const dev = vlanIfaceName(n);
+  // Defence in depth — these values reach `ip` as root. Reject anything that
+  // could be parsed as a flag or carry a newline before it ever runs.
+  assertSafeArg(n.iface, 'iface');
+  assertSafeArg(dev, 'vlan iface');
+  assertMatches(n.gateway, IPV4, 'gateway');
   // The VLAN child carries no traffic if its parent is down — bring it up first.
   await exec('ip', ['link', 'set', n.iface, 'up'], { allowFailure: true });
   const present = await exec('ip', ['link', 'show', dev], { allowFailure: true });
@@ -71,6 +77,7 @@ export async function ensureNetworkIface(n: Network): Promise<void> {
 export async function removeNetworkIface(n: Pick<Network, 'iface' | 'vlanId'>): Promise<void> {
   if (!n.vlanId) return;
   const dev = vlanIfaceName(n);
+  assertSafeArg(dev, 'vlan iface');
   await exec('ip', ['link', 'set', dev, 'down'], { allowFailure: true });
   await exec('ip', ['link', 'del', dev], { allowFailure: true });
   log.info({ dev }, 'network iface removed');
