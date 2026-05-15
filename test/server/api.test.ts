@@ -7,13 +7,14 @@ import { db } from '../../server/src/db/client';
 import { users, dnsRecords } from '../../server/src/db/schema';
 import { hash } from '../../server/src/auth/password';
 import { loadUser, requireAuth } from '../../server/src/auth/middleware';
+import { config } from '../../server/src/config';
 import authRoutes from '../../server/src/auth/routes';
 import dnsRoutes from '../../server/src/routes/dns';
 import overviewRoutes from '../../server/src/routes/overview';
 
 const app = express();
 app.use(express.json());
-app.use(cookieParser());
+app.use(cookieParser(config.sessionSecret)); // signed session cookie
 app.use(loadUser);
 app.use('/api/auth', authRoutes);
 app.use('/api/dns', requireAuth, dnsRoutes);
