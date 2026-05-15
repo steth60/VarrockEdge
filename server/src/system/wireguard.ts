@@ -7,6 +7,7 @@ import { db } from '../db/client';
 import { wgPeers, wgServer } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { log } from '../logger';
+import { noNewline, assertMatches, CIDR, CIDR_LIST, WG_KEY, ENDPOINT } from '../validators';
 
 const WG_DIR = config.onLinux ? '/etc/wireguard' : path.join(config.configDir, 'wireguard');
 const WG_CONF = path.join(WG_DIR, 'wg0.conf');
@@ -106,6 +107,9 @@ export async function importPeerFromConfig(name: string, configText: string): Pr
   const privateKey = parsed.iface.privateKey;
   if (!privateKey) throw new Error('config has no [Interface] PrivateKey — cannot import as a road-warrior peer');
   if (!parsed.iface.address) throw new Error('config has no [Interface] Address');
+  // base64 decoding is whitespace-lenient, so a newline could survive the
+  // 32-byte length check in derivePublicKey — reject it explicitly here.
+  assertMatches(privateKey, WG_KEY, 'imported PrivateKey');
 
   let publicKey: string;
   try {
@@ -136,6 +140,8 @@ export async function importPeerFromConfig(name: string, configText: string): Pr
     .map(s => s.trim()).filter(Boolean)
     .map(a => a.includes('/') ? a : `${a}/32`)
     .join(',');
+  assertMatches(allowedIps, CIDR_LIST, 'imported Address');
+  if (srvPeer?.presharedKey) assertMatches(srvPeer.presharedKey, WG_KEY, 'imported PresharedKey');
 
   const row = db.insert(wgPeers).values({
     name,
@@ -222,6 +228,14 @@ export async function addPeer(input: AddPeerInput) {
   if (!server) throw new Error('wg server not initialized');
   const kind = input.kind ?? 'road-warrior';
 
+  // Validate every caller-supplied value before it can be persisted and later
+  // rendered into wg0.conf — defence in depth alongside the route schemas.
+  if (input.providedPublicKey) assertMatches(input.providedPublicKey, WG_KEY, 'publicKey');
+  if (input.providedPresharedKey) assertMatches(input.providedPresharedKey, WG_KEY, 'presharedKey');
+  if (input.allowedIps) assertMatches(input.allowedIps, CIDR_LIST, 'allowedIps');
+  if (input.remoteSubnet) assertMatches(input.remoteSubnet, CIDR, 'remoteSubnet');
+  if (input.remoteEndpoint) assertMatches(input.remoteEndpoint, ENDPOINT, 'remoteEndpoint');
+
   if (kind === 'site') {
     if (!input.providedPublicKey) throw new Error('site link requires a remote public key');
     if (!input.remoteSubnet) throw new Error('site link requires a remote subnet');
@@ -305,18 +319,18 @@ export function renderRemotePeerSnippet(peerId: number): string {
     `# Add this [Peer] block to the REMOTE side's wg0.conf`,
     `# to complete the site-to-site link with VarrokEdge.`,
     `[Peer]`,
-    `# VarrokEdge edge — link "${peer.name}"`,
-    `PublicKey = ${server.publicKey}`,
+    `# VarrokEdge edge — link "${noNewline(peer.name, 'peer name')}"`,
+    `PublicKey = ${noNewline(server.publicKey, 'server publicKey')}`,
   ];
-  if (peer.presharedKey) lines.push(`PresharedKey = ${peer.presharedKey}`);
+  if (peer.presharedKey) lines.push(`PresharedKey = ${noNewline(peer.presharedKey, 'peer presharedKey')}`);
   if (server.publicEndpoint) {
-    lines.push(`Endpoint = ${server.publicEndpoint}:${server.listenPort}`);
+    lines.push(`Endpoint = ${noNewline(server.publicEndpoint, 'publicEndpoint')}:${Number(server.listenPort)}`);
   } else {
-    lines.push(`Endpoint = YOUR.EDGE.IP:${server.listenPort}  # set publicEndpoint in Tunnel settings first`);
+    lines.push(`Endpoint = YOUR.EDGE.IP:${Number(server.listenPort)}  # set publicEndpoint in Tunnel settings first`);
   }
   // Advertise our LAN as what they should route to via this peer.
   lines.push(`AllowedIPs = 10.0.0.0/24`);
-  lines.push(`PersistentKeepalive = ${peer.keepalive}`);
+  lines.push(`PersistentKeepalive = ${Number(peer.keepalive)}`);
   return lines.join('\n') + '\n';
 }
 
@@ -333,18 +347,18 @@ export function renderPeerConf(peerId: number): string {
   if (!server) throw new Error('server not initialized');
   const lines = [
     '[Interface]',
-    `PrivateKey = ${peer.privateKey ?? '<unknown — re-issue this peer>'}`,
-    `Address = ${peer.allowedIps}`,
-    `DNS = ${server.dnsPush}`,
-    `MTU = ${server.mtu}`,
+    `PrivateKey = ${noNewline(peer.privateKey ?? '<unknown — re-issue this peer>', 'peer privateKey')}`,
+    `Address = ${noNewline(peer.allowedIps, 'peer allowedIps')}`,
+    `DNS = ${noNewline(server.dnsPush, 'dnsPush')}`,
+    `MTU = ${Number(server.mtu)}`,
     '',
     '[Peer]',
-    `PublicKey = ${server.publicKey}`,
+    `PublicKey = ${noNewline(server.publicKey, 'server publicKey')}`,
   ];
-  if (peer.presharedKey) lines.push(`PresharedKey = ${peer.presharedKey}`);
-  lines.push(`Endpoint = ${server.publicEndpoint ?? 'YOUR.PUBLIC.IP'}:${server.listenPort}`);
-  lines.push(`AllowedIPs = ${server.defaultAllowedIps}`);
-  lines.push(`PersistentKeepalive = ${peer.keepalive}`);
+  if (peer.presharedKey) lines.push(`PresharedKey = ${noNewline(peer.presharedKey, 'peer presharedKey')}`);
+  lines.push(`Endpoint = ${noNewline(server.publicEndpoint ?? 'YOUR.PUBLIC.IP', 'publicEndpoint')}:${Number(server.listenPort)}`);
+  lines.push(`AllowedIPs = ${noNewline(server.defaultAllowedIps, 'defaultAllowedIps')}`);
+  lines.push(`PersistentKeepalive = ${Number(peer.keepalive)}`);
   return lines.join('\n') + '\n';
 }
 
@@ -352,25 +366,31 @@ export function renderServerConfig(): string {
   const server = ensureServer();
   if (!server) return '';
   const peers = db.select().from(wgPeers).all();
+  // wg-quick executes `PostUp`/`PostDown` lines as root via /bin/bash. A CR/LF
+  // in any interpolated value below would inject an arbitrary `PostUp` —
+  // every value is therefore newline-checked, and the render fails closed.
+  const wan = noNewline(config.wanIface, 'wanIface');
+  const tunnelPrefix = server.tunnelCidr.split('/')[1] ?? '24';
+  const addr = `${server.tunnelCidr.split('/')[0]?.replace(/\.0$/, '.1')}/${tunnelPrefix}`;
   const lines = [
     '# Managed by VarrokEdge — do not edit by hand.',
     '[Interface]',
-    `PrivateKey = ${server.privateKey}`,
-    `Address = ${server.tunnelCidr.split('/')[0]?.replace(/\.0$/, '.1')}/${server.tunnelCidr.split('/')[1]}`,
-    `ListenPort = ${server.listenPort}`,
-    `MTU = ${server.mtu}`,
-    `PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o ${config.wanIface} -j MASQUERADE`,
-    `PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o ${config.wanIface} -j MASQUERADE`,
+    `PrivateKey = ${noNewline(server.privateKey, 'server privateKey')}`,
+    `Address = ${noNewline(addr, 'tunnelCidr')}`,
+    `ListenPort = ${Number(server.listenPort)}`,
+    `MTU = ${Number(server.mtu)}`,
+    `PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o ${wan} -j MASQUERADE`,
+    `PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o ${wan} -j MASQUERADE`,
   ];
   for (const p of peers) {
     lines.push('');
-    lines.push(`# ${p.name}`);
+    lines.push(`# ${noNewline(p.name, 'peer name')}`);
     lines.push('[Peer]');
-    lines.push(`PublicKey = ${p.publicKey}`);
-    if (p.presharedKey) lines.push(`PresharedKey = ${p.presharedKey}`);
-    lines.push(`AllowedIPs = ${p.allowedIps}`);
-    if (p.remoteEndpoint) lines.push(`Endpoint = ${p.remoteEndpoint}`);
-    if (p.keepalive) lines.push(`PersistentKeepalive = ${p.keepalive}`);
+    lines.push(`PublicKey = ${noNewline(p.publicKey, 'peer publicKey')}`);
+    if (p.presharedKey) lines.push(`PresharedKey = ${noNewline(p.presharedKey, 'peer presharedKey')}`);
+    lines.push(`AllowedIPs = ${noNewline(p.allowedIps, 'peer allowedIps')}`);
+    if (p.remoteEndpoint) lines.push(`Endpoint = ${noNewline(p.remoteEndpoint, 'peer remoteEndpoint')}`);
+    if (p.keepalive) lines.push(`PersistentKeepalive = ${Number(p.keepalive)}`);
   }
   return lines.join('\n') + '\n';
 }
