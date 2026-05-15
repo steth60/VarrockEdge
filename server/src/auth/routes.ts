@@ -30,7 +30,7 @@ router.post('/login', async (req, res) => {
   db.update(users).set({ lastSeenAt: new Date() }).where(eq(users.id, u.id)).run();
   res.cookie(SESSION_COOKIE, sess.id, {
     httpOnly: true,
-    sameSite: 'lax',
+    sameSite: 'strict',
     secure: req.secure,
     expires: sess.expiresAt,
     path: '/',
