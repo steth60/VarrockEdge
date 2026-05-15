@@ -397,6 +397,8 @@ export function renderServerConfig(): string {
   // every value is therefore newline-checked, and the render fails closed.
   const wan = noNewline(config.wanIface, 'wanIface');
   const lan = noNewline(config.lanIface, 'lanIface');
+  const tunnel = noNewline(server.tunnelCidr, 'tunnelCidr');
+  const wgPort = Number(server.listenPort);
   const tunnelPrefix = server.tunnelCidr.split('/')[1] ?? '24';
   const addr = `${server.tunnelCidr.split('/')[0]?.replace(/\.0$/, '.1')}/${tunnelPrefix}`;
   const lines = [
@@ -404,11 +406,13 @@ export function renderServerConfig(): string {
     '[Interface]',
     `PrivateKey = ${noNewline(server.privateKey, 'server privateKey')}`,
     `Address = ${noNewline(addr, 'tunnelCidr')}`,
-    `ListenPort = ${Number(server.listenPort)}`,
+    `ListenPort = ${wgPort}`,
     `MTU = ${Number(server.mtu)}`,
-    // Forward both ways across the tunnel + masquerade tunnel→WAN egress.
-    `PostUp = sysctl -w net.ipv4.ip_forward=1; iptables -A FORWARD -i wg0 -j ACCEPT; iptables -A FORWARD -o wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o ${wan} -j MASQUERADE`,
-    `PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o ${wan} -j MASQUERADE`,
+    // Forward both ways across the tunnel; MASQUERADE *only* the tunnel subnet
+    // (not an unscoped catch-all); and keep the WAN UDP hole in sync with the
+    // actual ListenPort so the firewall can never drift from the config.
+    `PostUp = sysctl -w net.ipv4.ip_forward=1; iptables -A FORWARD -i wg0 -j ACCEPT; iptables -A FORWARD -o wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -s ${tunnel} -o ${wan} -j MASQUERADE; iptables -C INPUT -i ${wan} -p udp --dport ${wgPort} -j ACCEPT || iptables -A INPUT -i ${wan} -p udp --dport ${wgPort} -j ACCEPT`,
+    `PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -s ${tunnel} -o ${wan} -j MASQUERADE`,
   ];
   // Per site-to-site peer: SNAT that remote subnet's traffic as it enters any
   // VarrokEdge LAN interface (eth1, eth1.2, … — the `+` wildcard covers VLAN
