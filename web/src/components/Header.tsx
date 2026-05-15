@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Link, useLocation } from 'react-router-dom';
 import { Icon, StatusPill, Badge, type StatusKind } from './primitives';
 import { AccountModal } from './AccountModal';
@@ -34,7 +35,9 @@ export function Header({
   const [health, setHealth] = useState<{ status: StatusKind; label: string }>({ status: 'running', label: 'all systems normal' });
   const [menuOpen, setMenuOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const popRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const load = () => api.get<{ services: Service[] }>('/api/overview/services').then(r => {
@@ -49,11 +52,14 @@ export function Header({
     return () => clearInterval(t);
   }, []);
 
-  // Dismiss the account menu on outside-click + Escape.
+  // Dismiss the account menu on outside-click + Escape. The menu is portaled
+  // to document.body, so an "inside" click must check the popup ref too.
   useEffect(() => {
     if (!menuOpen) return;
     const onDown = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+      const t = e.target as Node;
+      if (menuRef.current?.contains(t) || popRef.current?.contains(t)) return;
+      setMenuOpen(false);
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuOpen(false); };
     document.addEventListener('mousedown', onDown);
@@ -62,6 +68,13 @@ export function Header({
   }, [menuOpen]);
 
   const initials = (user?.name ?? 'A').split(' ').map(s => s[0]).slice(0, 2).join('').toUpperCase();
+
+  const toggleMenu = () => {
+    if (menuOpen) { setMenuOpen(false); return; }
+    const r = menuRef.current?.getBoundingClientRect();
+    if (r) setMenuPos({ top: r.bottom + 8, left: r.right - 240 });
+    setMenuOpen(true);
+  };
 
   return (
     <header className="h-12 shrink-0 border-b border-zinc-800/70 bg-zinc-950/40 backdrop-blur flex items-center gap-4 px-5">
@@ -91,9 +104,9 @@ export function Header({
         <StatusPill status={health.status} label={health.label} />
       </Link>
 
-      <div className="relative" ref={menuRef}>
+      <div ref={menuRef}>
         <button
-          onClick={() => setMenuOpen(o => !o)}
+          onClick={toggleMenu}
           aria-label="Account menu"
           className="w-8 h-8 rounded-full flex items-center justify-center transition-transform hover:scale-105"
         >
@@ -101,33 +114,38 @@ export function Header({
             {initials}
           </span>
         </button>
-
-        {menuOpen && (
-          <div className="absolute right-0 top-full mt-2 w-60 rounded-lg glass-strong shadow-2xl border border-zinc-800/70 overflow-hidden z-50">
-            <div className="px-3.5 py-3 border-b border-zinc-800/70">
-              <div className="flex items-center gap-1.5">
-                <span className="text-[12.5px] font-medium text-zinc-100 truncate">{user?.name ?? 'Account'}</span>
-                {user && <Badge variant="neutral" size="sm">{user.role}</Badge>}
-              </div>
-              <div className="font-mono text-[10.5px] text-zinc-500 truncate mt-0.5">{user?.email ?? '—'}</div>
-            </div>
-            <button
-              onClick={() => { setMenuOpen(false); setAccountOpen(true); }}
-              className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-[12px] text-zinc-300 hover:bg-zinc-800/60 hover:text-zinc-100 transition-colors"
-            >
-              <Icon name="UserCog" size={14} className="text-zinc-500" />
-              Account settings
-            </button>
-            <button
-              onClick={() => { setMenuOpen(false); onLogout(); }}
-              className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-[12px] text-rose-300 hover:bg-rose-500/10 transition-colors border-t border-zinc-800/70"
-            >
-              <Icon name="LogOut" size={14} />
-              Sign out
-            </button>
-          </div>
-        )}
       </div>
+
+      {menuOpen && menuPos && createPortal(
+        <div
+          ref={popRef}
+          className="fixed w-60 rounded-lg glass-strong shadow-2xl border border-zinc-800/70 overflow-hidden z-[200]"
+          style={{ top: menuPos.top, left: menuPos.left }}
+        >
+          <div className="px-3.5 py-3 border-b border-zinc-800/70">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[12.5px] font-medium text-zinc-100 truncate">{user?.name ?? 'Account'}</span>
+              {user && <Badge variant="neutral" size="sm">{user.role}</Badge>}
+            </div>
+            <div className="font-mono text-[10.5px] text-zinc-500 truncate mt-0.5">{user?.email ?? '—'}</div>
+          </div>
+          <button
+            onClick={() => { setMenuOpen(false); setAccountOpen(true); }}
+            className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-[12px] text-zinc-300 hover:bg-zinc-800/60 hover:text-zinc-100 transition-colors"
+          >
+            <Icon name="UserCog" size={14} className="text-zinc-500" />
+            Account settings
+          </button>
+          <button
+            onClick={() => { setMenuOpen(false); onLogout(); }}
+            className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-[12px] text-rose-300 hover:bg-rose-500/10 transition-colors border-t border-zinc-800/70"
+          >
+            <Icon name="LogOut" size={14} />
+            Sign out
+          </button>
+        </div>,
+        document.body
+      )}
 
       {user && <AccountModal open={accountOpen} onClose={() => setAccountOpen(false)} user={user} onSaved={onAccountSaved} />}
     </header>
