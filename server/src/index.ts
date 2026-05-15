@@ -7,7 +7,7 @@ import os from 'node:os';
 import { config } from './config';
 import { log } from './logger';
 import { runMigrations } from './db/migrate';
-import { loadUser, requireAuth } from './auth/middleware';
+import { loadUser, requireAuth, requireRoleForMutation } from './auth/middleware';
 import authRoutes from './auth/routes';
 import overviewRoutes from './routes/overview';
 import metricsRoutes from './routes/metrics';
@@ -79,25 +79,32 @@ async function main() {
   // Public routes
   app.use('/api/auth', authRoutes);
 
-  // Protected routes
-  app.use('/api/overview', requireAuth, overviewRoutes);
-  app.use('/api/metrics',  requireAuth, metricsRoutes);
-  app.use('/api/dhcp',     requireAuth, dhcpRoutes);
-  app.use('/api/dns',      requireAuth, dnsRoutes);
-  app.use('/api/wireguard',requireAuth, wgRoutes);
-  app.use('/api/firewall', requireAuth, fwRoutes);
+  // Protected routes. Tiered role matrix — GET stays open to any authenticated
+  // user (read-only dashboards); mutating verbs require the tier below.
+  //   networkWrite : Owner/Admin/Network — day-to-day network configuration.
+  //   adminWrite   : Owner/Admin         — security, services, system, settings.
+  // `users` and `upnp` enforce their own finer-grained per-verb gates.
+  const networkWrite = requireRoleForMutation('Owner', 'Admin', 'Network');
+  const adminWrite = requireRoleForMutation('Owner', 'Admin');
+
+  app.use('/api/overview', requireAuth, adminWrite,   overviewRoutes);
+  app.use('/api/metrics',  requireAuth, adminWrite,   metricsRoutes);
+  app.use('/api/dhcp',     requireAuth, networkWrite, dhcpRoutes);
+  app.use('/api/dns',      requireAuth, networkWrite, dnsRoutes);
+  app.use('/api/wireguard',requireAuth, networkWrite, wgRoutes);
+  app.use('/api/firewall', requireAuth, networkWrite, fwRoutes);
   app.use('/api/users',    requireAuth, userRoutes);
-  app.use('/api/settings', requireAuth, settingsRoutes);
-  app.use('/api/logs',     requireAuth, logsRoutes);
-  app.use('/api/topology', requireAuth, topologyRoutes);
-  app.use('/api/security', requireAuth, securityRoutes);
-  app.use('/api/services', requireAuth, servicesRoutes);
-  app.use('/api/system',   requireAuth, systemRoutes);
-  app.use('/api/sysdata',  requireAuth, sysdataRoutes);
-  app.use('/api/probes',   requireAuth, probesRoutes);
-  app.use('/api/flows',    requireAuth, flowsRoutes);
-  app.use('/api/wan',      requireAuth, wanRoutes);
-  app.use('/api/networks', requireAuth, networkRoutes);
+  app.use('/api/settings', requireAuth, adminWrite,   settingsRoutes);
+  app.use('/api/logs',     requireAuth, adminWrite,   logsRoutes);
+  app.use('/api/topology', requireAuth, adminWrite,   topologyRoutes);
+  app.use('/api/security', requireAuth, adminWrite,   securityRoutes);
+  app.use('/api/services', requireAuth, adminWrite,   servicesRoutes);
+  app.use('/api/system',   requireAuth, adminWrite,   systemRoutes);
+  app.use('/api/sysdata',  requireAuth, adminWrite,   sysdataRoutes);
+  app.use('/api/probes',   requireAuth, adminWrite,   probesRoutes);
+  app.use('/api/flows',    requireAuth, adminWrite,   flowsRoutes);
+  app.use('/api/wan',      requireAuth, adminWrite,   wanRoutes);
+  app.use('/api/networks', requireAuth, networkWrite, networkRoutes);
   app.use('/api/upnp',     requireAuth, upnpRoutes);
 
   // In-app docs viewer — must be mounted BEFORE the SPA catch-all.
