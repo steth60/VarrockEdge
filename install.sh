@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # VarrokEdge installer — Debian 12 / Ubuntu 24.04 LXC container
 set -euo pipefail
+# Files created by this installer (notably the env file with the session
+# secret and admin password) must never be world-readable.
+umask 077
 
 # ─── Preflight ───────────────────────────────────────────────────
 if [[ $EUID -ne 0 ]]; then
@@ -44,11 +47,20 @@ apt-get install -y --no-install-recommends \
   sqlite3 \
   build-essential python3 >/dev/null
 
-# Ookla speedtest (optional but enabled by default). Their apt repo:
+# Ookla speedtest (optional, enabled by default). The repo-setup script is a
+# third-party artifact — download it to a file (not piped blindly into a
+# shell) so a truncated/failed fetch aborts under `set -e` and the script can
+# be inspected. speedtest stays optional: the app degrades cleanly without it.
 if ! command -v speedtest >/dev/null 2>&1; then
   echo "▸ Installing Ookla speedtest CLI"
-  curl -fsSL https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | bash >/dev/null 2>&1 || true
-  apt-get install -y speedtest >/dev/null 2>&1 || echo "  speedtest install skipped (offline or repo unavailable)"
+  ook_tmp="$(mktemp)"
+  if curl -fsSL https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh -o "$ook_tmp"; then
+    bash "$ook_tmp" >/dev/null 2>&1 || true
+    apt-get install -y speedtest >/dev/null 2>&1 || echo "  speedtest install skipped (offline or repo unavailable)"
+  else
+    echo "  speedtest repo script unavailable — skipping"
+  fi
+  rm -f "$ook_tmp"
 fi
 
 # ─── Lock down auto-started daemons ──────────────────────────────
@@ -59,9 +71,17 @@ echo "▸ Disabling miniupnpd (VarrokEdge manages it)"
 systemctl disable --now miniupnpd >/dev/null 2>&1 || true
 
 # ─── Node.js 20 ──────────────────────────────────────────────────
+# Install via a pinned NodeSource apt repo + signed-by keyring rather than
+# piping their setup script into a root shell. apt then verifies every
+# package signature against that key.
 if ! command -v node >/dev/null 2>&1 || ! node -v | grep -q '^v20\|^v21\|^v22'; then
-  echo "▸ Installing Node.js 20 (NodeSource)"
-  curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >/dev/null
+  echo "▸ Installing Node.js 20 (NodeSource, pinned keyring)"
+  install -d -m 0755 /usr/share/keyrings
+  curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+    | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg
+  echo "deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+    > /etc/apt/sources.list.d/nodesource.list
+  apt-get update -qq
   apt-get install -y nodejs >/dev/null
 fi
 echo "  node $(node -v) · npm $(npm -v)"
@@ -83,6 +103,8 @@ fi
 # ─── Copy app source ─────────────────────────────────────────────
 echo "▸ Installing application to $APP_DIR"
 mkdir -p "$APP_DIR" "$CONFIG_DIR" "$DATA_DIR"
+# $CONFIG_DIR holds the env file (secrets) — keep it root-only.
+chmod 700 "$CONFIG_DIR"
 # Use rsync if available, else cp -r
 if command -v rsync >/dev/null 2>&1; then
   rsync -a --delete \
@@ -96,7 +118,8 @@ cd "$APP_DIR"
 
 # ─── Install npm deps + build ────────────────────────────────────
 echo "▸ Installing npm dependencies (this can take a few minutes)"
-npm install --no-audit --no-fund >/dev/null
+# `npm ci` installs exactly the committed package-lock — a reproducible build.
+npm ci --no-fund >/dev/null
 
 echo "▸ Building server + web bundle"
 npm run build >/dev/null
@@ -147,10 +170,25 @@ Restart=on-failure
 RestartSec=3s
 StandardOutput=journal
 StandardError=journal
-# Privileged — needs CAP_NET_ADMIN for iptables and write access to /etc.
-# Running as root is intentional for an appliance LXC.
+# Runs as root (intentional for an appliance LXC) but the blast radius of any
+# code-execution bug is bounded: capabilities are capped to networking, no new
+# privileges may be acquired, and kernel/cgroup/namespace surfaces are locked.
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-NoNewPrivileges=false
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+# ProtectSystem=strict + ReadWritePaths is a recommended further step but must
+# be validated per deployment (the app writes /etc/dnsmasq.d, /etc/wireguard,
+# /etc/iptables, /etc/miniupnpd, /etc/varrok-edge and /var/lib/{varrok-edge,
+# miniupnpd}); left off here so an install never bricks on a path omission.
 
 [Install]
 WantedBy=multi-user.target
@@ -207,7 +245,6 @@ else
 fi
 
 # ─── Output ──────────────────────────────────────────────────────
-ADMIN_PW="$(grep '^VE_ADMIN_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)"
 echo ""
 echo "════════════════════════════════════════════════════════════"
 echo "  VarrokEdge installed"
@@ -215,9 +252,10 @@ echo "════════════════════════�
 echo "  URL       : http://$BIND_HOST:$PORT"
 echo "  Username  : admin@varrok.local"
 if [[ "$FRESH_INSTALL" == "1" ]]; then
-  echo "  Password  : $ADMIN_PW"
-  echo ""
-  echo "  (Password is stored in $ENV_FILE — change it after first sign-in.)"
+  # Do NOT echo the password — stdout may be captured by tee/tmux/CI logs.
+  # VarrokEdge forces a password change on first sign-in regardless.
+  echo "  Password  : you'll be prompted to set one on first sign-in."
+  echo "              initial value: sudo grep '^VE_ADMIN_PASSWORD=' $ENV_FILE"
 else
   echo "  Password  : (unchanged — see $ENV_FILE)"
 fi
