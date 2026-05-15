@@ -5,6 +5,7 @@ import { config } from '../config';
 import { db } from '../db/client';
 import { dhcpReservations, dnsRecords, networks } from '../db/schema';
 import { log } from '../logger';
+import { noNewline } from '../validators';
 
 const LEASES_FILE = '/var/lib/misc/dnsmasq.leases';
 const CONF_DIR = config.onLinux ? '/etc/dnsmasq.d' : path.join(config.configDir, 'dnsmasq.d');
@@ -23,25 +24,30 @@ export function renderMainConf(): string {
   if (nets.length === 0) {
     // No networks defined — bind the LAN iface so dnsmasq still starts,
     // but serve no DHCP scope until a network exists.
-    lines.push(`interface=${config.lanIface}`);
+    lines.push(`interface=${noNewline(config.lanIface, 'lanIface')}`);
   } else {
     // One `interface=` line per network's (VLAN) interface.
+    // Every interpolated value is newline-checked: a CR/LF here would inject
+    // an arbitrary dnsmasq directive (e.g. `dhcp-script=`, which runs as root).
     for (const n of nets) {
-      lines.push(`interface=${n.vlanId ? `${n.iface}.${n.vlanId}` : n.iface}`);
+      const ifn = n.vlanId
+        ? `${noNewline(n.iface, 'iface')}.${Number(n.vlanId)}`
+        : noNewline(n.iface, 'iface');
+      lines.push(`interface=${ifn}`);
     }
     // One tagged dhcp-range + options block per DHCP-enabled network.
     for (const n of nets) {
       if (!n.dhcpEnabled) continue;
-      const tag = `net${n.id}`;
-      lines.push(`dhcp-range=set:${tag},${n.dhcpStart},${n.dhcpEnd},${n.leaseTime}`);
-      lines.push(`dhcp-option=tag:${tag},3,${n.gateway}`);
-      lines.push(`dhcp-option=tag:${tag},6,${n.dnsServers}`);
+      const tag = `net${Number(n.id)}`;
+      lines.push(`dhcp-range=set:${tag},${noNewline(n.dhcpStart, 'dhcpStart')},${noNewline(n.dhcpEnd, 'dhcpEnd')},${noNewline(n.leaseTime, 'leaseTime')}`);
+      lines.push(`dhcp-option=tag:${tag},3,${noNewline(n.gateway, 'gateway')}`);
+      lines.push(`dhcp-option=tag:${tag},6,${noNewline(n.dnsServers, 'dnsServers')}`);
     }
   }
 
   const defaultNet = nets.find(n => n.isDefault) ?? nets[0];
   lines.push(
-    `domain=${defaultNet?.domain ?? 'varrok.local'}`,
+    `domain=${noNewline(defaultNet?.domain ?? 'varrok.local', 'domain')}`,
     'local=/varrok.local/',
     'expand-hosts',
     'log-queries',
@@ -59,8 +65,8 @@ export function renderStaticConf(): string {
   for (const r of rows) {
     // Reservations carry their network tag so dnsmasq applies the right scope;
     // a NULL network_id falls through to whichever scope owns the IP.
-    const tag = r.networkId ? `set:net${r.networkId},` : '';
-    lines.push(`dhcp-host=${tag}${r.mac},${r.hostname},${r.ip},${r.lease}`);
+    const tag = r.networkId ? `set:net${Number(r.networkId)},` : '';
+    lines.push(`dhcp-host=${tag}${noNewline(r.mac, 'mac')},${noNewline(r.hostname, 'hostname')},${noNewline(r.ip, 'ip')},${noNewline(r.lease, 'lease')}`);
   }
   return lines.join('\n') + '\n';
 }
@@ -69,9 +75,11 @@ export function renderDnsConf(): string {
   const rows = db.select().from(dnsRecords).all();
   const lines = ['# Local DNS records'];
   for (const r of rows) {
-    if (r.type === 'CNAME') lines.push(`cname=${r.host},${r.target}`);
-    else if (r.type === 'TXT') lines.push(`txt-record=${r.host},${r.target}`);
-    else lines.push(`address=/${r.host}/${r.target}`);
+    const host = noNewline(r.host, 'host');
+    const target = noNewline(r.target, 'target');
+    if (r.type === 'CNAME') lines.push(`cname=${host},${target}`);
+    else if (r.type === 'TXT') lines.push(`txt-record=${host},${target}`);
+    else lines.push(`address=/${host}/${target}`);
   }
   return lines.join('\n') + '\n';
 }
